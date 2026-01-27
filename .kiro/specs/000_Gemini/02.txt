@@ -1,0 +1,342 @@
+交接总览（截至 2026-01-17）
+本交接面向“新接手的实现智能体/开发者”。内容分为三大部分：
+
+我方锐评与协作输出规则（你希望我如何工作与发号施令）；
+历史会话全纪要（从最早 Steering/Navi/Tree/Chest 直至当前 V2 修复方案与日志规范），逐卷逐会话详列文件、问题、方案、验收；
+当前收尾工作与交付清单（按优先级、按文件、按验收项列出）。
+为便于阅读，本交接尽量使用明确标题、要点列表与“文件与代码变更”小节，必要时给出样例日志/伪代码引用，但不重复贴长代码。
+
+一、你对我的规则要求（锐评与协作“操作规范”）
+1. 角色与工作方式
+你（用户）：
+作为“传话筒 + 裁判”，把中段的指令一键复制给另一个“写代码的智能体”执行；
+负责验收、反馈与继续驱动。
+我（锐评专家）：
+负责分析、诊断、制定“可执行且可验收的指令”；
+在信息不足时绝不猜测，直接向你要最小但关键的文件；
+输出结构固定：
+给你的话（开头/末尾，简短）；
+可直接复制给实现智能体的大段可执行文本（中间主体）。
+2. 输出格式与语气
+使用中文，条理清晰、分区明确、Markdown 标题与列表；
+先“已知条件与判断依据”，再“锐评与修正”，最后“任务清单/验收”；
+不做无根据的推断；信息不足时，先要文件再回答；
+语气直接、专业、可落地，不做迎合性废话。
+3. 关键工作原则（Steering 共识）
+Single Source of Truth（唯一真理来源）：
+层级/排序/跨系统规则放在 canonical 文档；模块文档引用它而不重复定义；
+在 front-matter 标注 isCanonical/canonicalDomain。
+规则分级与加载：
+P0 = inclusion: always（默认加载）；非 P0 = manual/fileMatch（手动触发）；
+keywords 仅用于提醒/索引，不自动加载（方案 A）。
+中文友好：英文文档需中文概述；对话中英文术语需中文解释。
+规则更新触发机制：完成模块/修正重大错误/引入全局约束/大重构/用户不满时，先请求你同意再更新。
+定期结构巡检与 memory 体积控制：
+memory.md 作为索引与摘要，不堆历史；详细内容拆分至 phases/reviews。
+4. 通用规范（已固化到 maintenance-guidelines）
+第十一章：世界物体 Sprite 状态切换规范
+“底部对齐”与“Sprite→Collider→NavGrid 刷新”链路是强制：
+状态切换前后底部中心坐标不变；
+刷新 PolygonCollider2D（或等价），Physics2D.SyncTransforms，再触发 NavGrid 重构。
+第十二章：Box UI 与 PackagePanel 互斥规范
+Box UI 必须在 PackagePanel 内；
+打开 Box → 隐藏 Main/Top；打开背包 → 关闭 Box 并恢复 Main/Top；
+互斥逻辑统一由 PackagePanelTabsUI 控制，BoxPanelUI 不得随意关闭 PackagePanel 根。
+第十三章：UI 面板与世界输入互斥规范
+任何“全屏/半屏 UI 面板”打开时，禁用世界输入（移动/使用工具/自动导航/滚轮/数字键），保留 Tab/ESC/页签热键。
+5. 调试日志规范（Debug Standards）
+目标：精准、简洁、可控、唯一。
+分级：Error（致命）、Warning（降级）、Debug（默认关闭，有开关 showDebugInfo 或全局开关）。
+高频函数（Refresh/Update）禁止详尽日志；UIItemIconScaler/Refresh 等默认静默。
+错误去重：同一错误仅打一次（用静态标志或聚合后统一输出）。
+一次完整交互（开箱→操作→关箱）日志总量 ≤ 15 行。
+6. 验收节拍（你要求实现智能体做到）
+每次提交必须包含：
+核心代码修改片段（指向文件+方法）；
+对照“测试清单”的实机结果（通过/未通过+简析）；
+如未通过，给出最小复现与初步诊断；
+memory 与相关设计/规范同步更新（只写摘要+链接）。
+二、历史会话全纪要（至 2026-01-17）
+本纪要按“卷”（主题域）与“会话编号/阶段”编排，覆盖 Steering 规则重构 → 导航系统 → 树木系统联动 → 箱子系统与 UI 落地，并延伸至近期的 V2 修复与日志规范。
+
+为避免冗长代码，以下以“问题→行动→文件变更→结论→遗留/验收”结构描述。
+
+卷 S：Steering 规则体系重构（S 系列）
+S-1 现状评估与总体分层
+问题
+.kiro/steering 规则文件过多（21 个），每次对话消耗上下文；需要分级与按需加载。
+行动
+列出 21 个文件，估算字符/Token；提出 P0-P5 分层与 A/B/C 三种加载方案。
+产出“规则优先级分析.md”。
+锐评
+方向正确，但未真正修改 front-matter；需要“P0=always + 其余 manual”的可执行配置。
+文件
+新建 specs/Steering 规则区优化/requirements.md、规则优先级分析.md、memory.md。
+结论
+有方案，但未实装分级与 front-matter。
+遗留
+修改每个 steering 文件 front-matter；补 README 索引与触发/用途/优先级说明。
+S-2 数据冗余与错误删除风险
+问题
+有人欲删 tree-system.md，但其含关键数值；重复数据需合并。
+行动
+抢救：将 tree-system.md 的数值与规则合并至 trees.md；删除 context-handoff.md。
+结论
+数值唯一真理来源确保（layers.md 定层级，trees.md 含数值）。
+遗留
+建立“删除/合并检查清单”。
+S-3 Single Source of Truth 与跨文档引用
+行动
+trees.md 中层级部分改为“详见 layers.md”；ui.md 的全局规则迁移至 rules.md。
+结论
+规范更清晰。
+遗留
+在 core 文件 front-matter 标注 isCanonical 与 canonicalDomain。
+S-4 中文友好与语言规范
+行动
+在多处 archive 文档添加中文概述与“可能过时”提示；
+新增“与中文用户对话的语言规范”。
+结论
+中文用户更易理解。
+遗留
+增加“最后更新日期”字段与维护规范。
+S-5 规则更新工作流与触发机制
+行动
+增加“规则更新触发机制”“对话结束检查清单”。
+遗留
+要求实际对话中执行检查清单并在 memory 打钩。
+S-6 keywords 用途澄清（方案 A 增强）
+结论
+keywords 仅用于索引/提醒，不自动加载；避免未来误触发。
+S-7 定期结构巡检制度
+行动
+新建 specs-structure-audit.md；在 maintenance-guidelines.md 添加“定期结构巡检”。
+结论
+制度化防止 memory 退化为“垃圾桶”。
+（说明：S 卷奠定了“分层加载、唯一真理来源、中文友好、触发机制、定期巡检”等基础协作规范，后续各卷均复用）
+
+卷 N：导航系统重构（N 系列）
+N-1 体检与痛点
+问题
+要求高性能、零 GC、稳定寻路；现有实现存在 GC 炸弹、LOS 穿墙、架构污染（输入层特判业务）。
+行动
+指定：OverlapCircleAll → NonAlloc + 缓存；LOS 改 CircleCast；引入 IInteractable；InputManager 只分发。
+N-2 Phase 1 Zero-GC
+行动
+缓存 Collider2D[]，替换 OverlapCircleAll；NavGrid2DStressTest；GC Alloc 平稳。
+遗留
+大场景需分帧重建。
+N-3 Phase 2 物理校正（CircleCast）
+行动
+HasLineOfSight 改 Physics2D.CircleCast，调试 Gizmos；白名单导致薄墙穿透 → 改为黑名单（检测所有层，排除 Trigger）。
+结论
+薄墙穿透修复。
+N-4 Phase 2 与 NavGrid 的双重检测
+行动
+LOS 增 NavGrid 采样（沿射线采样 IsWalkable），修复“无 Collider 但 Grid 不可走”的水域/悬崖。
+N-5 Phase 3 架构手术（IInteractable）
+行动
+定义 IInteractable 与 InteractionContext；ChestController 等实现；
+锐评：GameInputManager 仍有特判，缺“目标选择器”。
+N-6 Phase 3 终极修正
+行动
+交互改为 OverlapPointAll 收集候选，先按 InteractionPriority 再按距离排序；禁止硬编码分支。
+结论
+交互体系稳定。
+N-7~N-10 记忆重构与索引化
+行动
+导航 specs 记忆拆分 phases/reviews，memory 精简为索引。
+结论
+结构健康。
+卷 T：树木系统与 NavGrid 联动（T 系列）
+T-1 问题暴露与修复
+问题
+树成长后 NavGrid 阻挡未更新，路径穿树。
+行动
+在 NavGrid2D.RebuildGrid 首行 Physics2D.SyncTransforms；树形状变化后立刻 RequestNavGridRefresh。
+结论
+时序问题修复。
+遗留
+增长/砍伐回归测试。
+T-2~T-7 长期需求（季节/成长/编辑器 UI）
+行动
+6 阶段成长、5 季节样式、季节渐变修复；Inspector UI 自定义；成长空间检测；季节事件暂停/恢复；调参热更新。
+结论
+数据/设计/实现梳理清晰。
+遗留
+年度测试计划、季节/天气联动脚本化回归。
+T-8 树木 specs 工作区重构
+结论
+记忆结构健康；phase 文档要求“测试记录与图像证据”。
+卷 C：箱子系统重构与 UI 落地（C 系列）
+本卷为当前主战场，叙述更细。
+
+C-1 问题定义与系统要求
+用户要求（节选）：
+箱子 = 世界容器；掉落自动放置；上锁/钥匙材质匹配；推动/挖取；交互距离与放置系统一致；
+UI 与 PackagePanel 互斥：上方=箱子格子（Up），下方=背包镜像（Down）；关闭 UI 保存变更；
+使用已配好的 Box_12/24/36/48 预制体：“只绑定不生成”；
+打开箱子 sprite 改变、Collider 同步、底部对齐一致（石头/树的规范要复用）。
+C-2 错误方向（被叫停）
+行动
+动态生成 UI，破坏已配预制体。
+锐评
+立即停止，改为“只绑定不生成”；遍历 Up/Down 子物体收集 InventorySlotUI；StorageData 配置 boxUiPrefab；ChestController 实例化对应 prefab。
+C-3 ChestInventory 确立（数据层）
+行动
+新建 ChestInventory（非 MonoBehaviour），ChestController 切换到 _inventory；Open/Close 设置状态。
+遗留
+UI 层与互斥未落地；在 BoxPanelUI 订阅 ChestInventory 事件。
+C-4 UI 互斥与 PackagePanel 集成（第一轮）
+行动
+PackagePanelTabsUI 增加 CloseBoxPanelIfOpen；BoxPanelUI ActiveInstance；ChestController.OpenBoxUI() 仍实例化到 Canvas（错误）。
+锐评
+Box UI 必须放 PackagePanel 内的 boxUIRoot；Down 绑定背包失败需修复。
+C-5 用户层级截图与结构指令
+核心规则
+Up/Down 都是 GridLayout + ToggleGroup；Up_XX/Down_XX = Toggle + InventorySlotUI + Raycast Image；
+Down 是背包镜像（与背包面板一致）；
+互斥：背包 Main/Top vs Box UI 互斥；Box UI 必须生成在 PackagePanel 指定节点；
+Sprite 切换后 Collider 同步，底部对齐不变，NavGrid 刷新；
+世界箱子放置在 SCENE/LAYER 1/Props。
+C-6 高压反馈与 P0 指令
+必须：
+BoxPanelUI.Open 激活父链，受 PackagePanel 遮罩；
+Down 绑定 InventoryService（索引起点与 Hotbar 约定确认）；
+关闭 UI → SetOpen(false) → UpdateSprite → UpdatePolygonColliderShape → NavGrid 刷新；
+写成通用规范：任何“状态切换导致 sprite 更换”的对象都需保持底部对齐与 Collider 同步。
+文件
+PackagePanelTabsUI.OpenBoxUI/CloseBoxUI + boxUIRoot；ChestController.OpenBoxUI 走 PackagePanel；BoxPanelUI.RefreshInventorySlots 增强。
+结论
+编译通过，需实机验证。
+全局开放问题与验收清单（A-F）
+A UI 层级与互斥（实例化位置、父链激活、互斥逻辑）
+B Down 区背包镜像（索引0..35或12..，绑定顺序与诊断日志）
+C Chest 世界物体（父节点、Sprite 开合、Collider 同步、NavGrid 刷新）
+D 锁与状态细节（玩家箱、世界箱）
+E 规范文档更新（Collider/对齐/UI 层级）
+F 实机验收项（自动弹、父链、互斥、Down 显示、Sprite 复原、不位移、Collider 同步、父节点正确）
+——以上为“初代 C 系列”。
+
+C-后续：集中问题爆发与深入修正
+问题组 1：打开箱子 sprite 改了，但 Box UI 不自动打开
+原因
+BoxPanelUI.Open 内错误调用 ClosePackagePanel；或 PackagePanel 根未激活；互斥控制分散在多处。
+修正
+互斥逻辑统一放 PackagePanelTabsUI；BoxPanelUI 不再关闭 PackagePanel；OpenBoxUI 时 EnsurePanelOpenForBox + HideMainAndTop。
+问题组 2：Sprite 底部对齐与 Collider 同步缺失
+现象
+开/关箱子视觉“跳动”；Collider/NavGrid 未同步，路径错误。
+修正
+ChestController 内实现 ApplySpriteWithBottomAlign、新建 UpdateColliderShape 与 SetOpen 中完整链路（UpdateSpriteForState → UpdateColliderShape → RequestNavGridRefresh）。
+问题组 3：Down 为空、Tab 互斥失败
+现象
+Down 有时不显示；Tab 关闭箱子后再按 Tab，不开启背包。
+修正
+Down 绑定在 PackagePanelTabsUI.Open 时 EnsurePanelOpenForBox（确保 InventoryPanelUI.EnsureBuilt 已跑）；
+OpenOrToggle/ OpenPanel 入口先 CloseBoxPanelIfOpen，再 SetVisiblePage/ShowMainAndTop。
+问题组 4：核心灾难——Up 区“背包镜像”
+现象
+Up 任意格点击/拖拽，实际操作 Down 对应位置；Up 仅显示背包内容。
+根因（两条叠加）
+BoxPanelUI.BindChestSlotData 在 Open 时 _database == null，导致“绑定 ChestInventory”被提前 return；
+即便外观绑定 ChestInventory 成功，交互层 InventorySlotInteraction 完全忽略 InventorySlotUI.Container，只认 InventoryService → 导致所有 Up 交互走背包逻辑。
+证据（典型日志）
+[BoxPanelUI] BindChestSlotData 失败: chest=True, inventory=True, db=False（Up 绑定未执行）
+InventorySlotUI Refresh: name=Up_00 (i), container=InventoryService, index=i（Up 仍是背包容器）
+大量 UIItemIconScaler/Refresh 噪音掩盖关键错误。
+修复路线（V2）
+需求 V2：
+Open 中防御性 _database 初始化（优先箱子 → 背包服务 → 查找）；
+扩展 InventorySlotInteraction，基于 InventorySlotUI.Container 分支：
+Container=ChestInventory 时，直接在 Interaction 内调用 ChestInventory 的 SwapOrMerge/TransferXXX，不再传给只懂背包的 Manager；
+Down 仍走原 Manager 逻辑。
+实施日志规范（关掉高频/细节，错误去重）；
+Sort 触发 OnInventoryChanged，UI 订阅刷新。
+Design/Tasks V2：
+已形成文档（requirements/design/tasks/memory），但最初把“跨容器拖拽”标注为“输出日志，暂不实现”，经锐评已提升为 P0：必须实现最小可用跨容器拖拽（DragContext → Drop 分支 → 调用 ChestInventory.TransferXXX）。
+互斥与导航问题追补（P0）
+统一关闭/互斥：所有 Tab/B/M/L/O 热键只调用 tabs.OpenXX；tabs.OpenOrToggle/ OpenPanel 入口统一 CloseBoxPanelIfOpen，并恢复 Main/Top；
+IsAnyPanelOpen 必须与视觉一致，避免“以为 UI 还开着”而阻止导航；
+复测场景：BoxOpen → Tab；NoPanel → 右键远箱子；BoxOpen → 右键远箱子。
+调试日志治理
+制定 Debug 规范：
+Refresh 与 IconScaler 默认静默；
+BindChestSlotData 失败只打一次；
+每次操作 ≤ 5 行关键日志；完整流程 ≤ 15 行。
+真实日志样本复盘（你提供的 JSON）
+Down 绑定正确（container=InventoryService, index 0..35）；
+Up 仍刷背包；
+大量噪音日志（IconScaler/Refresh）掩盖 db=False 的关键告警。
+——至此，C 卷的“根因 → 设计 → 任务 → 验收”主线已经闭合，剩余就是按 P0 顺序落地与复测。
+
+三、当前收尾工作与交付清单（优先级/文件/验收）
+以下清单用于“最后一公里”交付，按 P0 → P1 排序。每条包含：要改文件/重点/验收点。
+
+P0 级（必须完成，才能说“箱子系统可用”）
+P0-1 UI 互斥与导航闭环
+文件
+GameInputManager.cs（移除对 Box 的直接关闭分支，热键只调 tabs.OpenXX）
+PackagePanelTabsUI.cs（OpenOrToggle / OpenPanel 入口统一 CloseBoxPanelIfOpen；ShowMainAndTop；EnsurePanelOpenForBox）
+验收
+BoxOpen → Tab/B/M/L/O：Box 关闭，背包页打开；
+NoPanel → 右键远处箱子：先导航后开 UI；
+BoxOpen → 右键另一个远处箱子：先导航，后切换 UI。
+IsAnyPanelOpen 与视觉一致，不再出现“看似关了，实则 uiOpen=true”的假状态。
+P0-2 Up/Down 跨容器拖拽（最小可用实现）
+文件
+InventorySlotInteraction.cs（新增：容器类型分支 + 轻量 DragContext）
+ChestInventory.cs（已具备 TransferFrom/ToInventory）
+重点
+BeginDrag：记录 SourceContainer/Index/Item；
+Drop：
+Chest→Chest：SwapOrMerge；
+Inventory→Chest：TransferFromInventory；
+Chest→Inventory：TransferToInventory；
+Inventory→Inventory：沿用 Manager 原逻辑。
+Interaction 内直接调用 ChestInventory/InventoryService API，不强耦合到 Manager。
+验收
+Down→Up：物品进箱子；Up→Down：物品出箱子；Up→Up：箱内交换/合并；
+事件驱动 UI 自动刷新；无“Up 镜像背包”的交叉影响。
+P0-3 _database 与绑定时序
+文件
+BoxPanelUI.cs（Open: 防御性获取 _database；失败则 Error 并 return；成功后 chest.SetDatabase(_database) 再 Refresh）
+验收
+不再出现“BindChestSlotData 失败: db=False”；
+Up 容器 = ChestInventory；UI 显示箱子内容。
+P0-4 Sort 事件与刷新
+文件
+ChestInventory.cs / InventoryService.cs（Sort 末尾 RaiseInventoryChanged）
+BoxPanelUI.cs（已订阅 OnInventoryChanged → 刷新）
+验收
+SortUp/SortDown 操作立即刷新对应区域；
+Box 界面的 SortDown 行为与背包面板一致（必要时复用相同接口/服务）。
+P1 级（体验/维护）
+P1-1 日志规范落地
+文件
+InventorySlotUI.cs（Refresh 默认无日志；Bind* 失败才 Warning）
+UIItemIconScaler.cs（showDebugInfo 开关）
+BoxPanelUI.cs（BindChestSlotData 失败日志去重）
+验收
+打开箱子 ≤3 行；点击 ≤2 行；拖拽 ≤3 行；Sort ≤2 行；关闭 ≤1 行；完整 ≤15 行。
+P1-2 文档/规范同步
+文件
+maintenance-guidelines.md（确认第11/12/13章已含我们新增细则与示例）
+箱子 specs V2（requirements/design/tasks/memory 已存在，按执行进度打钩）
+验收
+文档状态与代码行为一致；memory 简洁、指向对应设计/评审文档。
+最终验收大清单（汇总）
+Up/Down 显示正确、互斥正确；
+背包/箱子拖拽四象限全部可用；
+Sort 生效并刷新；
+开合箱子底部不跳、Collider 同步、NavGrid 刷新；
+UI 打开时禁用世界输入；
+导航/Tab 状态机闭环；
+日志总量可控；
+交付包含代码片段与测试结果；
+memory/design/tasks/指南同步更新。
+风险与注意
+若 InventoryInteractionManager 被硬写死为 InventoryService，需要坚决避免对其大动干戈——优先在 Interaction 层做容器分支与最小 DragContext；
+若 Up 预制体子层还有额外 InventorySlotUI，CollectSlots 必须只取 Up 直接子级；
+Down 绑定与背包面板保持参数一致（尤其 equipment/isHotbar 标志），避免行为差异；
+多 UI 状态入口（快捷键/Toggle/代码）最终都应汇聚到 tabs 的统一状态机接口。
