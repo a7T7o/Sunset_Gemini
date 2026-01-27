@@ -365,20 +365,10 @@ public class GameInputManager : MonoBehaviour
         
         if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
         
-        // ★ 检查是否处于放置模式（优先 V3 → V2 → V1）
-        if (PlacementManagerV3.Instance != null && PlacementManagerV3.Instance.IsPlacementMode)
-        {
-            PlacementManagerV3.Instance.OnLeftClick();
-            return;
-        }
-        if (PlacementManagerV2.Instance != null && PlacementManagerV2.Instance.IsPlacementMode)
-        {
-            PlacementManagerV2.Instance.TryPlace();
-            return;
-        }
+        // ★ 检查是否处于放置模式
         if (PlacementManager.Instance != null && PlacementManager.Instance.IsPlacementMode)
         {
-            PlacementManager.Instance.TryPlace();
+            PlacementManager.Instance.OnLeftClick();
             return;
         }
         

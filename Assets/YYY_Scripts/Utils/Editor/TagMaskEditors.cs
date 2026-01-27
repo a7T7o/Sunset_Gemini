@@ -86,28 +86,4 @@ public class PlacementManagerEditor : Editor
         serializedObject.ApplyModifiedProperties();
     }
 }
-
-[CustomEditor(typeof(PlacementManagerV2))]
-public class PlacementManagerV2Editor : Editor
-{
-    public override void OnInspectorGUI()
-    {
-        serializedObject.Update();
-        DrawPropertiesExcluding(serializedObject, "m_Script", "obstacleTags");
-        NavGrid2DEditor.DrawTagMask(serializedObject.FindProperty("obstacleTags"), "Obstacle Tags");
-        serializedObject.ApplyModifiedProperties();
-    }
-}
-
-[CustomEditor(typeof(PlacementManagerV3))]
-public class PlacementManagerV3Editor : Editor
-{
-    public override void OnInspectorGUI()
-    {
-        serializedObject.Update();
-        DrawPropertiesExcluding(serializedObject, "m_Script", "obstacleTags");
-        NavGrid2DEditor.DrawTagMask(serializedObject.FindProperty("obstacleTags"), "Obstacle Tags");
-        serializedObject.ApplyModifiedProperties();
-    }
-}
 #endif

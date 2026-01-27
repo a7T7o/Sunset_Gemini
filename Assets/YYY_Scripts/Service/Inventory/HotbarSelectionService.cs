@@ -122,33 +122,18 @@ public class HotbarSelectionService : MonoBehaviour
         if (itemData == null) return;
 
         // ★ 检查是否是可放置物品
-        Debug.Log($"<color=cyan>[HotbarSelectionService] 选中物品: {itemData.itemName}, isPlaceable={itemData.isPlaceable}, placementType={itemData.placementType}</color>");
-        
         if (itemData.isPlaceable)
         {
             // 进入放置模式
             playerToolController.UnequipCurrent();
-            // 优先使用 V3 → V2 → V1
-            Debug.Log($"<color=yellow>[HotbarSelectionService] PlacementManagerV3.Instance={PlacementManagerV3.Instance != null}, PlacementManagerV2.Instance={PlacementManagerV2.Instance != null}, PlacementManager.Instance={PlacementManager.Instance != null}</color>");
             
-            if (PlacementManagerV3.Instance != null)
+            if (PlacementManager.Instance != null)
             {
-                Debug.Log($"<color=green>[HotbarSelectionService] 调用 PlacementManagerV3.EnterPlacementMode</color>");
-                PlacementManagerV3.Instance.EnterPlacementMode(itemData, slot.quality);
-            }
-            else if (PlacementManagerV2.Instance != null)
-            {
-                Debug.Log($"<color=green>[HotbarSelectionService] 调用 PlacementManagerV2.EnterPlacementMode</color>");
-                PlacementManagerV2.Instance.EnterPlacementMode(itemData, slot.quality);
-            }
-            else if (PlacementManager.Instance != null)
-            {
-                Debug.Log($"<color=green>[HotbarSelectionService] 调用 PlacementManager.EnterPlacementMode</color>");
                 PlacementManager.Instance.EnterPlacementMode(itemData, slot.quality);
             }
             else
             {
-                Debug.LogError("[HotbarSelectionService] 没有找到任何 PlacementManager！");
+                Debug.LogError("[HotbarSelectionService] 没有找到 PlacementManager！");
             }
             return;
         }
@@ -168,17 +153,6 @@ public class HotbarSelectionService : MonoBehaviour
     /// </summary>
     private void ExitPlacementModeIfActive()
     {
-        // 优先检查 V3 → V2 → V1
-        if (PlacementManagerV3.Instance != null && PlacementManagerV3.Instance.IsPlacementMode)
-        {
-            PlacementManagerV3.Instance.ExitPlacementMode();
-            return;
-        }
-        if (PlacementManagerV2.Instance != null && PlacementManagerV2.Instance.IsPlacementMode)
-        {
-            PlacementManagerV2.Instance.ExitPlacementMode();
-            return;
-        }
         if (PlacementManager.Instance != null && PlacementManager.Instance.IsPlacementMode)
         {
             PlacementManager.Instance.ExitPlacementMode();
