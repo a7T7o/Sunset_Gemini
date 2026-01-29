@@ -5,13 +5,13 @@ namespace FarmGame.Data
     /// <summary>
     /// 树苗数据 - 可种植的树苗
     /// 放置后会实例化关联的树木预制体，并设置为阶段0（树苗）
-    /// 季节样式由 TreeControllerV2 自动处理
+    /// 季节样式由 TreeController 自动处理
     /// </summary>
     [CreateAssetMenu(fileName = "Sapling_New", menuName = "Farm/Placeable/Sapling", order = 1)]
     public class SaplingData : PlaceableItemData
     {
         [Header("=== 树苗专属属性 ===")]
-        [Tooltip("关联的树木预制体（必须包含 TreeControllerV2 组件）")]
+        [Tooltip("关联的树木预制体（必须包含 TreeController 组件）")]
         public GameObject treePrefab;
 
         [Tooltip("种植经验值")]
@@ -51,11 +51,11 @@ namespace FarmGame.Data
         {
             base.OnPlaced(position, instance);
 
-            // 获取 TreeControllerV2 并设置为阶段0
-            var treeController = instance.GetComponentInChildren<TreeControllerV2>();
+            // 获取 TreeController 并设置为阶段0
+            var treeController = instance.GetComponentInChildren<TreeController>();
             if (treeController != null)
             {
-                // TreeControllerV2 会自动处理季节样式
+                // TreeController 会自动处理季节样式
                 treeController.SetStage(0);
             }
         }
@@ -88,12 +88,12 @@ namespace FarmGame.Data
         }
 
         /// <summary>
-        /// 获取树木预制体上的 TreeControllerV2 组件
+        /// 获取树木预制体上的 TreeController 组件
         /// </summary>
-        public TreeControllerV2 GetTreeController()
+        public TreeController GetTreeController()
         {
             if (treePrefab == null) return null;
-            return treePrefab.GetComponentInChildren<TreeControllerV2>();
+            return treePrefab.GetComponentInChildren<TreeController>();
         }
 
         /// <summary>
@@ -139,11 +139,11 @@ namespace FarmGame.Data
             }
             else
             {
-                // 检查预制体是否包含 TreeControllerV2
-                var treeController = treePrefab.GetComponentInChildren<TreeControllerV2>();
+                // 检查预制体是否包含 TreeController
+                var treeController = treePrefab.GetComponentInChildren<TreeController>();
                 if (treeController == null)
                 {
-                    Debug.LogError($"[{itemName}] 树木预制体 {treePrefab.name} 缺少 TreeControllerV2 组件！");
+                    Debug.LogError($"[{itemName}] 树木预制体 {treePrefab.name} 缺少 TreeController 组件！");
                 }
             }
         }

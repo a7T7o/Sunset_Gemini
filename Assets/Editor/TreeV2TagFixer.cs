@@ -29,8 +29,8 @@ public class TreeV2TagFixer : Editor
             
             if (prefab == null) continue;
             
-            // 检查是否有 TreeControllerV2 组件
-            var treeController = prefab.GetComponentInChildren<TreeControllerV2>();
+            // 检查是否有 TreeController 组件
+            var treeController = prefab.GetComponentInChildren<TreeController>();
             if (treeController == null) continue;
             
             // 检查父物体的标签
@@ -86,8 +86,8 @@ public class TreeV2TagFixer : Editor
             
             if (prefab == null) continue;
             
-            // 检查是否有 TreeControllerV2 组件
-            var treeController = prefab.GetComponentInChildren<TreeControllerV2>();
+            // 检查是否有 TreeController 组件
+            var treeController = prefab.GetComponentInChildren<TreeController>();
             if (treeController == null) continue;
             
             if (prefab.tag == "Tree")

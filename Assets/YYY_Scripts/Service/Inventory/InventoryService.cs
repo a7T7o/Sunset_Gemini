@@ -1,15 +1,24 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using FarmGame.Data;
+using FarmGame.Data.Core;
 
 /// <summary>
-/// 运行时背包服务
-/// - 36格库存（3行x12列），索引0..35
-/// - 0..11 为第一行，映射到 ToolBar（完全共用，不复制）
-/// - 事件：库存整体变化、单格变化、热键行变化
-/// - AddItem 优先：先叠加第一行，再空位第一行，再其余叠加，再其余空位
+/// 运行时背包服务 - V2 重构版
+/// 
+/// 核心改进：
+/// - 内部使用 PlayerInventoryData（基于 InventoryItem）存储
+/// - 实现 IPersistentObject 接口，支持存档/读档
+/// - 保留所有旧接口签名，兼容现有 UI
+/// - 对外暴露 ItemStack 接口，内部使用 InventoryItem
+/// 
+/// 设计原则：
+/// - 数据以 InventoryItem 为准
+/// - UI 显示时转换为 ItemStack（只在显示那一瞬间）
+/// - 保存时直接序列化 InventoryItem
 /// </summary>
-public class InventoryService : MonoBehaviour, IItemContainer
+public class InventoryService : MonoBehaviour, IItemContainer, IPersistentObject
 {
     public const int DefaultInventorySize = 36; // 3行 * 12列
     public const int HotbarWidth = 12;          // 第一行 12 格
@@ -20,10 +29,19 @@ public class InventoryService : MonoBehaviour, IItemContainer
     [Header("容量")]
     [SerializeField] private int inventorySize = DefaultInventorySize;
     
+    [Header("持久化配置")]
+    [SerializeField, Tooltip("对象唯一 ID（自动生成）")]
+    private string _persistentId;
+    
     [Header("Debug")]
     [SerializeField] private bool showDebugInfo = false;
 
-    [SerializeField] private ItemStack[] slots;
+    // 🔥 核心改变：使用 PlayerInventoryData 替代 ItemStack[]
+    private PlayerInventoryData _inventoryData;
+    
+    // 兼容旧代码：保留 slots 字段用于序列化迁移
+    [SerializeField, HideInInspector] 
+    private ItemStack[] _legacySlots;
 
     // 事件
     public event Action OnInventoryChanged;
@@ -31,35 +49,194 @@ public class InventoryService : MonoBehaviour, IItemContainer
     public event Action<int> OnHotbarSlotChanged; // index: 0..11
 
     public int Size => inventorySize;
-    public ItemDatabase Database => database; // 公开访问器
+    public ItemDatabase Database => database;
 
     // IItemContainer 接口实现
     public int Capacity => inventorySize;
+    
+    #region IPersistentObject 实现
+    
+    public string PersistentId
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(_persistentId))
+            {
+                _persistentId = System.Guid.NewGuid().ToString();
+            }
+            return _persistentId;
+        }
+    }
+    
+    public string ObjectType => "PlayerInventory";
+    
+    public bool ShouldSave => gameObject.activeInHierarchy;
+    
+    public WorldObjectSaveData Save()
+    {
+        var data = new WorldObjectSaveData
+        {
+            guid = PersistentId,
+            objectType = ObjectType,
+            sceneName = gameObject.scene.name,
+            isActive = gameObject.activeSelf
+        };
+        
+        // 将背包数据序列化为 JSON 存入 genericData
+        var inventoryData = _inventoryData.ToSaveData();
+        data.genericData = JsonUtility.ToJson(inventoryData);
+        
+        if (showDebugInfo)
+            Debug.Log($"[InventoryService] Save: {inventoryData.slots?.Count ?? 0} 个槽位");
+        
+        return data;
+    }
+    
+    public void Load(WorldObjectSaveData data)
+    {
+        if (data == null || string.IsNullOrEmpty(data.genericData)) return;
+        
+        try
+        {
+            var inventoryData = JsonUtility.FromJson<InventorySaveData>(data.genericData);
+            _inventoryData.LoadFromSaveData(inventoryData);
+            
+            if (showDebugInfo)
+                Debug.Log($"[InventoryService] Load: {inventoryData.slots?.Count ?? 0} 个槽位");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[InventoryService] Load 失败: {e.Message}");
+        }
+    }
+    
+    #endregion
 
+    #region Unity 生命周期
+    
     void Awake()
     {
         if (inventorySize <= 0) inventorySize = DefaultInventorySize;
-        if (slots == null || slots.Length != inventorySize)
+        
+        // 初始化新的数据核心
+        _inventoryData = new PlayerInventoryData(inventorySize, database);
+        
+        // 订阅内部事件，转发到外部
+        _inventoryData.OnSlotChanged += HandleInternalSlotChanged;
+        _inventoryData.OnInventoryChanged += HandleInternalInventoryChanged;
+        
+        // 迁移旧数据（如果有）
+        MigrateLegacyData();
+    }
+    
+    void Start()
+    {
+        // 注册到持久化注册中心
+        if (PersistentObjectRegistry.Instance != null)
         {
-            slots = new ItemStack[inventorySize];
-            for (int i = 0; i < inventorySize; i++) slots[i] = ItemStack.Empty;
+            PersistentObjectRegistry.Instance.Register(this);
         }
     }
+    
+    void OnDestroy()
+    {
+        // 从注册中心注销
+        if (PersistentObjectRegistry.Instance != null)
+        {
+            PersistentObjectRegistry.Instance.Unregister(this);
+        }
+        
+        // 取消订阅
+        if (_inventoryData != null)
+        {
+            _inventoryData.OnSlotChanged -= HandleInternalSlotChanged;
+            _inventoryData.OnInventoryChanged -= HandleInternalInventoryChanged;
+        }
+    }
+    
+    /// <summary>
+    /// 迁移旧的 ItemStack 数据到新系统
+    /// </summary>
+    private void MigrateLegacyData()
+    {
+        if (_legacySlots != null && _legacySlots.Length > 0)
+        {
+            for (int i = 0; i < _legacySlots.Length && i < inventorySize; i++)
+            {
+                var stack = _legacySlots[i];
+                if (!stack.IsEmpty)
+                {
+                    _inventoryData.SetSlot(i, stack);
+                }
+            }
+            
+            // 清空旧数据
+            _legacySlots = null;
+            
+            if (showDebugInfo)
+                Debug.Log("[InventoryService] 已迁移旧数据到新系统");
+        }
+    }
+    
+    private void HandleInternalSlotChanged(int index)
+    {
+        OnSlotChanged?.Invoke(index);
+        if (index >= 0 && index < HotbarWidth)
+            OnHotbarSlotChanged?.Invoke(index);
+    }
+    
+    private void HandleInternalInventoryChanged()
+    {
+        OnInventoryChanged?.Invoke();
+    }
+    
+    #endregion
 
-    public void SetDatabase(ItemDatabase db) => database = db;
+    #region 编辑器支持
+    
+#if UNITY_EDITOR
+    void OnValidate()
+    {
+        if (string.IsNullOrEmpty(_persistentId))
+        {
+            _persistentId = System.Guid.NewGuid().ToString();
+            UnityEditor.EditorUtility.SetDirty(this);
+        }
+    }
+    
+    [ContextMenu("重新生成持久化 ID")]
+    private void RegeneratePersistentId()
+    {
+        _persistentId = System.Guid.NewGuid().ToString();
+        UnityEditor.EditorUtility.SetDirty(this);
+        Debug.Log($"[InventoryService] 已重新生成 ID: {_persistentId}");
+    }
+#endif
+    
+    #endregion
 
-    // 读取槽位
+    public void SetDatabase(ItemDatabase db)
+    {
+        database = db;
+        _inventoryData?.SetDatabase(db);
+    }
+
+    #region ItemStack 兼容接口（供旧 UI 使用）
+    
+    /// <summary>
+    /// 读取槽位（返回 ItemStack，兼容旧 UI）
+    /// </summary>
     public ItemStack GetSlot(int index)
     {
-        if (!InRange(index)) return ItemStack.Empty;
-        return slots[index];
+        if (_inventoryData == null || !InRange(index)) return ItemStack.Empty;
+        return _inventoryData.GetSlot(index);
     }
 
     public bool TryGetSlot(int index, out ItemStack stack)
     {
         if (InRange(index))
         {
-            stack = slots[index];
+            stack = GetSlot(index);
             return true;
         }
         stack = ItemStack.Empty;
@@ -68,261 +245,110 @@ public class InventoryService : MonoBehaviour, IItemContainer
 
     public bool SetSlot(int index, ItemStack stack)
     {
-        if (!InRange(index)) return false;
-        slots[index] = stack;
-        RaiseSlotChanged(index);
-        return true;
+        if (_inventoryData == null || !InRange(index)) return false;
+        return _inventoryData.SetSlot(index, stack);
     }
 
     public void ClearSlot(int index)
     {
-        if (!InRange(index)) return;
-        slots[index] = ItemStack.Empty;
-        RaiseSlotChanged(index);
+        if (_inventoryData == null || !InRange(index)) return;
+        _inventoryData.ClearItem(index);
     }
+    
+    #endregion
+    
+    #region InventoryItem 操作（新 API）
+    
+    /// <summary>
+    /// 获取指定槽位的 InventoryItem（新 API）
+    /// </summary>
+    public InventoryItem GetInventoryItem(int index)
+    {
+        if (_inventoryData == null || !InRange(index)) return null;
+        return _inventoryData.GetItem(index);
+    }
+    
+    /// <summary>
+    /// 设置指定槽位的 InventoryItem（新 API）
+    /// </summary>
+    public bool SetInventoryItem(int index, InventoryItem item)
+    {
+        if (_inventoryData == null || !InRange(index)) return false;
+        return _inventoryData.SetItem(index, item);
+    }
+    
+    /// <summary>
+    /// 添加 InventoryItem（支持动态属性）
+    /// </summary>
+    public bool AddInventoryItem(InventoryItem item)
+    {
+        if (_inventoryData == null) return false;
+        return _inventoryData.AddInventoryItem(item);
+    }
+    
+    #endregion
 
+    #region 交换与合并
+    
     public bool SwapOrMerge(int a, int b)
     {
-        if (!InRange(a) || !InRange(b) || a == b) return false;
-        var A = slots[a];
-        var B = slots[b];
-        if (A.IsEmpty && B.IsEmpty) return false;
-
-        // 尝试合并（同ID同品质且未满）
-        if (!A.IsEmpty && !B.IsEmpty && A.CanStackWith(B))
-        {
-            int maxStack = GetMaxStack(A.itemId);
-            int spaceInB = Mathf.Max(0, maxStack - B.amount);
-            if (spaceInB > 0)
-            {
-                int move = Mathf.Min(spaceInB, A.amount);
-                B.amount += move;
-                A.amount -= move;
-                slots[a] = A.amount > 0 ? A : ItemStack.Empty;
-                slots[b] = B;
-                RaiseSlotChanged(a);
-                RaiseSlotChanged(b);
-                return true;
-            }
-        }
-
-        // 交换
-        slots[a] = B;
-        slots[b] = A;
-        RaiseSlotChanged(a);
-        RaiseSlotChanged(b);
-        return true;
+        if (_inventoryData == null) return false;
+        return _inventoryData.SwapOrMerge(a, b);
     }
+    
+    #endregion
 
+    #region 添加物品
+    
     /// <summary>
     /// 添加物品（优先叠加/放置在第一行）
     /// 返回未能放入的剩余数量
     /// </summary>
     public int AddItem(int itemId, int quality, int amount)
     {
-        if (amount <= 0) return 0;
-        int remaining = amount;
-
-        // 1) 第一行叠加
-        remaining = FillExistingStacksRange(itemId, quality, remaining, 0, HotbarWidth);
-        // 2) 第一行空位
-        remaining = FillEmptySlotsRange(itemId, quality, remaining, 0, HotbarWidth);
-        // 3) 其他叠加
-        remaining = FillExistingStacksRange(itemId, quality, remaining, HotbarWidth, inventorySize);
-        // 4) 其他空位
-        remaining = FillEmptySlotsRange(itemId, quality, remaining, HotbarWidth, inventorySize);
-
-        if (remaining != amount)
-        {
-            RaiseInventoryChanged();
-        }
-        return remaining;
+        if (_inventoryData == null || amount <= 0) return amount;
+        return _inventoryData.AddItem(itemId, quality, amount);
     }
 
     /// <summary>
     /// 检查是否可以添加指定物品（不实际添加）
-    /// 用于在触发拾取动画前检查背包是否有空间
     /// </summary>
-    /// <returns>true 表示背包有空间可以容纳该物品</returns>
     public bool CanAddItem(int itemId, int quality, int amount)
     {
-        if (amount <= 0) return true;
-        int remaining = amount;
-        int maxStack = GetMaxStack(itemId);
-
-        // 1) 检查第一行现有堆叠空间
-        remaining = CountAvailableStackSpace(itemId, quality, remaining, 0, HotbarWidth, maxStack);
-        if (remaining <= 0) return true;
-
-        // 2) 检查第一行空位
-        remaining = CountEmptySlotSpace(remaining, 0, HotbarWidth, maxStack);
-        if (remaining <= 0) return true;
-
-        // 3) 检查其他行现有堆叠空间
-        remaining = CountAvailableStackSpace(itemId, quality, remaining, HotbarWidth, inventorySize, maxStack);
-        if (remaining <= 0) return true;
-
-        // 4) 检查其他行空位
-        remaining = CountEmptySlotSpace(remaining, HotbarWidth, inventorySize, maxStack);
-
-        return remaining <= 0;
+        if (_inventoryData == null) return false;
+        return _inventoryData.CanAddItem(itemId, quality, amount);
     }
+    
+    #endregion
 
-    /// <summary>
-    /// 计算指定范围内现有堆叠可容纳的空间
-    /// </summary>
-    int CountAvailableStackSpace(int itemId, int quality, int remaining, int start, int end, int maxStack)
-    {
-        for (int i = start; i < end && remaining > 0; i++)
-        {
-            var s = slots[i];
-            if (!s.IsEmpty && s.itemId == itemId && s.quality == quality && s.amount < maxStack)
-            {
-                remaining -= (maxStack - s.amount);
-            }
-        }
-        return Mathf.Max(0, remaining);
-    }
-
-    /// <summary>
-    /// 计算指定范围内空位可容纳的空间
-    /// </summary>
-    int CountEmptySlotSpace(int remaining, int start, int end, int maxStack)
-    {
-        for (int i = start; i < end && remaining > 0; i++)
-        {
-            if (slots[i].IsEmpty)
-            {
-                remaining -= maxStack;
-            }
-        }
-        return Mathf.Max(0, remaining);
-    }
-
-    int FillExistingStacksRange(int itemId, int quality, int remaining, int start, int end)
-    {
-        if (remaining <= 0) return 0;
-        int maxStack = GetMaxStack(itemId);
-        for (int i = start; i < end && remaining > 0; i++)
-        {
-            var s = slots[i];
-            if (!s.IsEmpty && s.itemId == itemId && s.quality == quality && s.amount < maxStack)
-            {
-                int canAdd = Mathf.Min(remaining, maxStack - s.amount);
-                s.amount += canAdd;
-                remaining -= canAdd;
-                slots[i] = s;
-                RaiseSlotChanged(i);
-            }
-        }
-        return remaining;
-    }
-
-    int FillEmptySlotsRange(int itemId, int quality, int remaining, int start, int end)
-    {
-        if (remaining <= 0) return 0;
-        int maxStack = GetMaxStack(itemId);
-        for (int i = start; i < end && remaining > 0; i++)
-        {
-            var s = slots[i];
-            if (s.IsEmpty)
-            {
-                int put = Mathf.Min(remaining, maxStack);
-                slots[i] = new ItemStack(itemId, quality, put);
-                remaining -= put;
-                RaiseSlotChanged(i);
-            }
-        }
-        return remaining;
-    }
-
+    #region 移除物品
+    
     public bool RemoveFromSlot(int index, int amount)
     {
-        if (!InRange(index) || amount <= 0) return false;
-        var s = slots[index];
-        if (s.IsEmpty) return false;
-        s.amount -= amount;
-        if (s.amount <= 0) s = ItemStack.Empty;
-        slots[index] = s;
-        RaiseSlotChanged(index);
-        return true;
+        if (_inventoryData == null) return false;
+        return _inventoryData.RemoveFromSlot(index, amount);
     }
 
     /// <summary>
     /// 从背包中移除指定物品
-    /// 优先从第一行（Hotbar）移除，然后从其他行移除
     /// </summary>
-    /// <param name="itemId">物品 ID</param>
-    /// <param name="quality">物品品质（-1 表示任意品质）</param>
-    /// <param name="amount">移除数量</param>
-    /// <returns>是否成功移除全部数量</returns>
     public bool RemoveItem(int itemId, int quality, int amount)
     {
-        if (amount <= 0) return true;
-        int remaining = amount;
-
-        // 1) 先从第一行移除
-        remaining = RemoveFromRange(itemId, quality, remaining, 0, HotbarWidth);
-        // 2) 再从其他行移除
-        remaining = RemoveFromRange(itemId, quality, remaining, HotbarWidth, inventorySize);
-
-        if (remaining != amount)
-        {
-            RaiseInventoryChanged();
-        }
-
-        return remaining <= 0;
+        if (_inventoryData == null) return false;
+        return _inventoryData.RemoveItem(itemId, quality, amount);
     }
+    
+    #endregion
 
-    /// <summary>
-    /// 从指定范围的槽位中移除物品
-    /// </summary>
-    int RemoveFromRange(int itemId, int quality, int remaining, int start, int end)
-    {
-        if (remaining <= 0) return 0;
-        
-        for (int i = start; i < end && remaining > 0; i++)
-        {
-            var s = slots[i];
-            if (s.IsEmpty) continue;
-            if (s.itemId != itemId) continue;
-            if (quality >= 0 && s.quality != quality) continue; // quality < 0 表示任意品质
-            
-            int canRemove = Mathf.Min(remaining, s.amount);
-            s.amount -= canRemove;
-            remaining -= canRemove;
-            
-            slots[i] = s.amount > 0 ? s : ItemStack.Empty;
-            RaiseSlotChanged(i);
-        }
-        
-        return remaining;
-    }
-
+    #region 查询
+    
     /// <summary>
     /// 检查背包中是否有足够数量的指定物品
     /// </summary>
-    /// <param name="itemId">物品 ID</param>
-    /// <param name="quality">物品品质（-1 表示任意品质）</param>
-    /// <param name="amount">需要的数量</param>
-    /// <returns>是否有足够数量</returns>
     public bool HasItem(int itemId, int quality, int amount)
     {
-        if (amount <= 0) return true;
-        int count = 0;
-        
-        for (int i = 0; i < inventorySize; i++)
-        {
-            var s = slots[i];
-            if (s.IsEmpty) continue;
-            if (s.itemId != itemId) continue;
-            if (quality >= 0 && s.quality != quality) continue;
-            
-            count += s.amount;
-            if (count >= amount) return true;
-        }
-        
-        return false;
+        if (_inventoryData == null) return false;
+        return _inventoryData.HasItem(itemId, quality, amount);
     }
 
     public int GetMaxStack(int itemId)
@@ -332,96 +358,45 @@ public class InventoryService : MonoBehaviour, IItemContainer
         if (data == null) return 99;
         return Mathf.Max(1, data.maxStackSize);
     }
+    
+    #endregion
 
-    bool InRange(int i) => i >= 0 && i < inventorySize;
-
-    void RaiseSlotChanged(int index)
-    {
-        OnSlotChanged?.Invoke(index);
-        if (index >= 0 && index < HotbarWidth)
-            OnHotbarSlotChanged?.Invoke(index);
-    }
-
-    void RaiseInventoryChanged()
-    {
-        OnInventoryChanged?.Invoke();
-    }
-
+    #region 排序
+    
     /// <summary>
     /// 排序背包（不包括 Hotbar 第一行）
-    /// 规则：按 itemId 升序，同 ID 按 quality 降序，空槽位排在最后
     /// </summary>
     public void Sort()
     {
-        if (slots == null || slots.Length <= HotbarWidth) return;
-
-        // 只排序第二行和第三行（索引 12-35）
-        int sortStart = HotbarWidth;
-        int sortEnd = inventorySize;
-        int sortCount = sortEnd - sortStart;
-
-        // 收集所有非空物品
-        var items = new System.Collections.Generic.List<ItemStack>();
-        for (int i = sortStart; i < sortEnd; i++)
-        {
-            if (!slots[i].IsEmpty)
-            {
-                items.Add(slots[i]);
-            }
-        }
-
-        // 排序：itemId 升序，同 ID 按 quality 降序
-        items.Sort((a, b) =>
-        {
-            if (a.itemId != b.itemId)
-                return a.itemId.CompareTo(b.itemId);
-            return b.quality.CompareTo(a.quality); // quality 降序
-        });
-
-        // 合并相同物品
-        var merged = new System.Collections.Generic.List<ItemStack>();
-        foreach (var item in items)
-        {
-            bool stacked = false;
-            int maxStack = GetMaxStack(item.itemId);
-
-            for (int i = 0; i < merged.Count; i++)
-            {
-                if (merged[i].CanStackWith(item) && merged[i].amount < maxStack)
-                {
-                    int canAdd = Mathf.Min(item.amount, maxStack - merged[i].amount);
-                    var temp = merged[i];
-                    temp.amount += canAdd;
-                    merged[i] = temp;
-
-                    if (canAdd < item.amount)
-                    {
-                        var remaining = item;
-                        remaining.amount -= canAdd;
-                        merged.Add(remaining);
-                    }
-                    stacked = true;
-                    break;
-                }
-            }
-
-            if (!stacked)
-            {
-                merged.Add(item);
-            }
-        }
-
-        // 写回槽位（从第二行开始）
-        for (int i = 0; i < sortCount; i++)
-        {
-            int slotIndex = sortStart + i;
-            slots[slotIndex] = i < merged.Count ? merged[i] : ItemStack.Empty;
-        }
-
-        // 🔥 触发全局刷新事件，通知 UI 更新
-        RaiseInventoryChanged();
+        if (_inventoryData == null) return;
+        _inventoryData.Sort();
         
         if (showDebugInfo)
-            Debug.Log($"[InventoryService] Sort 完成，触发 OnInventoryChanged 事件");
+            Debug.Log($"[InventoryService] Sort 完成");
     }
+    
+    /// <summary>
+    /// 强制刷新指定槽位的 UI（供外部调用）
+    /// </summary>
+    public void RefreshSlot(int index)
+    {
+        if (InRange(index))
+        {
+            OnSlotChanged?.Invoke(index);
+            if (index >= 0 && index < HotbarWidth)
+                OnHotbarSlotChanged?.Invoke(index);
+        }
+    }
+    
+    /// <summary>
+    /// 强制刷新所有槽位的 UI（供外部调用）
+    /// </summary>
+    public void RefreshAll()
+    {
+        OnInventoryChanged?.Invoke();
+    }
+    
+    #endregion
+
+    bool InRange(int i) => i >= 0 && i < inventorySize;
 }

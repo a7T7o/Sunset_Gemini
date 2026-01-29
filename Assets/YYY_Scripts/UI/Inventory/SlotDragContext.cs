@@ -95,6 +95,16 @@ public static class SlotDragContext
     }
 
     /// <summary>
+    /// 🔥 更新拖拽物品（用于连续拿取时更新数量）
+    /// 不会重新检查互斥状态，仅更新 DraggedItem
+    /// </summary>
+    public static void UpdateDraggedItem(ItemStack item)
+    {
+        if (!IsDragging) return;
+        DraggedItem = item;
+    }
+
+    /// <summary>
     /// 取消拖拽（返回物品到源槽位）
     /// </summary>
     public static void Cancel()

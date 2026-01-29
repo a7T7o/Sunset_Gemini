@@ -4,11 +4,11 @@ using UnityEditorInternal;
 using FarmGame.Data;
 
 /// <summary>
-/// TreeControllerV2 自定义编辑器
+/// TreeController 自定义编辑器
 /// 以固定展示方式显示6阶段配置、Sprite配置、影子配置和经验配置
 /// </summary>
-[CustomEditor(typeof(TreeControllerV2))]
-public class TreeControllerV2Editor : Editor
+[CustomEditor(typeof(TreeController))]
+public class TreeControllerEditor : Editor
 {
     // 阶段名称
     private static readonly string[] StageNames = new string[]

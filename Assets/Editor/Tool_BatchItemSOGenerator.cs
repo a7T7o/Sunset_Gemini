@@ -43,6 +43,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
         WeaponData = 1,
         KeyData = 2,        // 钥匙
         LockData = 3,       // 锁
+        EquipmentData = 4,  // 装备（头盔、盔甲、裤子、鞋子、戒指）
         
         // 种植类
         SeedData = 10,
@@ -74,7 +75,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
 
     private static readonly Dictionary<ItemMainCategory, ItemSOType[]> CategoryToSubTypes = new()
     {
-        { ItemMainCategory.ToolEquipment, new[] { ItemSOType.ToolData, ItemSOType.WeaponData, ItemSOType.KeyData, ItemSOType.LockData } },
+        { ItemMainCategory.ToolEquipment, new[] { ItemSOType.ToolData, ItemSOType.WeaponData, ItemSOType.KeyData, ItemSOType.LockData, ItemSOType.EquipmentData } },
         { ItemMainCategory.Planting, new[] { ItemSOType.SeedData, ItemSOType.CropData } },
         { ItemMainCategory.Placeable, new[] { ItemSOType.SaplingData, ItemSOType.WorkstationData, ItemSOType.StorageData, ItemSOType.InteractiveDisplayData, ItemSOType.SimpleEventData } },
         { ItemMainCategory.Consumable, new[] { ItemSOType.FoodData, ItemSOType.PotionData } },
@@ -108,6 +109,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
         { ItemSOType.WeaponData, "武器" },
         { ItemSOType.KeyData, "钥匙" },
         { ItemSOType.LockData, "锁" },
+        { ItemSOType.EquipmentData, "装备" },
         { ItemSOType.SeedData, "种子" },
         { ItemSOType.CropData, "作物" },
         { ItemSOType.SaplingData, "树苗" },
@@ -129,6 +131,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
         { ItemSOType.WeaponData, 200 },
         { ItemSOType.KeyData, 1420 },
         { ItemSOType.LockData, 1410 },
+        { ItemSOType.EquipmentData, 8000 },
         { ItemSOType.SeedData, 1000 },
         { ItemSOType.CropData, 1100 },
         { ItemSOType.SaplingData, 1200 },
@@ -150,6 +153,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
         { ItemSOType.WeaponData, "Assets/111_Data/Items/Weapons" },
         { ItemSOType.KeyData, "Assets/111_Data/Items/Keys" },
         { ItemSOType.LockData, "Assets/111_Data/Items/Locks" },
+        { ItemSOType.EquipmentData, "Assets/111_Data/Items/Equipment" },
         { ItemSOType.SeedData, "Assets/111_Data/Items/Seeds" },
         { ItemSOType.CropData, "Assets/111_Data/Items/Crops" },
         { ItemSOType.SaplingData, "Assets/111_Data/Items/Placeable/Saplings" },
@@ -276,6 +280,11 @@ public class Tool_BatchItemSOGenerator : EditorWindow
 
     // === 锁专属 ===
     private ChestMaterial lockMaterial = ChestMaterial.Wood;
+
+    // === 装备专属 ===
+    private EquipmentType selectedEquipmentType = EquipmentType.Helmet;
+    private bool setEquipmentDefense = false;
+    private int equipmentDefense = 10;
 
     #endregion
 
@@ -550,6 +559,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
             ItemSOType.ToolData => "锄头、斧头、镐子、水壶等农具和采集工具",
             ItemSOType.WeaponData => "剑、弓、法杖等战斗装备",
             ItemSOType.KeyData => "用于开锁野外上锁箱子的钥匙",
+            ItemSOType.EquipmentData => "头盔、盔甲、裤子、鞋子、戒指等防具装备",
             ItemSOType.SeedData => "可种植的种子",
             ItemSOType.CropData => "收获的农作物",
             ItemSOType.SaplingData => "可放置的树苗，种下后成为树木",
@@ -633,6 +643,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
             case ItemSOType.WeaponData: DrawWeaponSettings(); break;
             case ItemSOType.KeyData: DrawKeySettings(); break;
             case ItemSOType.LockData: DrawLockSettings(); break;
+            case ItemSOType.EquipmentData: DrawEquipmentSettings(); break;
             case ItemSOType.SeedData: DrawSeedSettings(); break;
             case ItemSOType.SaplingData: DrawSaplingSettings(); break;
             case ItemSOType.CropData: DrawCropSettings(); break;
@@ -732,6 +743,38 @@ public class Tool_BatchItemSOGenerator : EditorWindow
             MessageType.Info);
     }
 
+    private void DrawEquipmentSettings()
+    {
+        EditorGUILayout.LabelField("🛡️ 装备专属设置", EditorStyles.boldLabel);
+        
+        selectedEquipmentType = (EquipmentType)EditorGUILayout.EnumPopup("装备类型", selectedEquipmentType);
+        
+        // 根据装备类型显示推荐 ID 范围和输出路径
+        string idHint = selectedEquipmentType switch
+        {
+            EquipmentType.Helmet => "头盔 - 推荐 ID: 8000-8099 - 槽位: 0",
+            EquipmentType.Armor => "盔甲 - 推荐 ID: 8100-8199 - 槽位: 2",
+            EquipmentType.Pants => "裤子 - 推荐 ID: 8200-8299 - 槽位: 1",
+            EquipmentType.Shoes => "鞋子 - 推荐 ID: 8300-8399 - 槽位: 3",
+            EquipmentType.Ring => "戒指 - 推荐 ID: 8400-8499 - 槽位: 4/5",
+            EquipmentType.Accessory => "饰品 - 推荐 ID: 8500-8599",
+            _ => ""
+        };
+        EditorGUILayout.HelpBox(idHint, MessageType.Info);
+        
+        DrawOptionalInt(ref setEquipmentDefense, ref equipmentDefense, "防御力", 0, 200);
+        
+        EditorGUILayout.HelpBox(
+            "装备槽位映射：\n" +
+            "• 槽位 0: 头盔 (Helmet)\n" +
+            "• 槽位 1: 裤子 (Pants)\n" +
+            "• 槽位 2: 盔甲 (Armor)\n" +
+            "• 槽位 3: 鞋子 (Shoes)\n" +
+            "• 槽位 4/5: 戒指 (Ring)\n\n" +
+            "装备不可堆叠，maxStackSize 固定为 1",
+            MessageType.None);
+    }
+
     private void DrawSeedSettings()
     {
         EditorGUILayout.LabelField("🌱 种子专属设置", EditorStyles.boldLabel);
@@ -745,17 +788,17 @@ public class Tool_BatchItemSOGenerator : EditorWindow
     {
         EditorGUILayout.LabelField("🌳 树苗专属设置", EditorStyles.boldLabel);
         
-        EditorGUILayout.HelpBox("树苗只需设置关联的树木预制体，季节样式由 TreeControllerV2 自动处理\n冬季无法种植树苗", MessageType.Info);
+        EditorGUILayout.HelpBox("树苗只需设置关联的树木预制体，季节样式由 TreeController 自动处理\n冬季无法种植树苗", MessageType.Info);
         
         saplingTreePrefab = (GameObject)EditorGUILayout.ObjectField("树木预制体", saplingTreePrefab, typeof(GameObject), false);
         
         if (saplingTreePrefab != null)
         {
-            var treeController = saplingTreePrefab.GetComponentInChildren<TreeControllerV2>();
+            var treeController = saplingTreePrefab.GetComponentInChildren<TreeController>();
             if (treeController == null)
-                EditorGUILayout.HelpBox("⚠️ 预制体缺少 TreeControllerV2 组件！", MessageType.Error);
+                EditorGUILayout.HelpBox("⚠️ 预制体缺少 TreeController 组件！", MessageType.Error);
             else
-                EditorGUILayout.HelpBox("✓ 预制体包含 TreeControllerV2 组件", MessageType.None);
+                EditorGUILayout.HelpBox("✓ 预制体包含 TreeController 组件", MessageType.None);
         }
         else
         {
@@ -1029,6 +1072,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
             ItemSOType.ToolData => "Tool",
             ItemSOType.WeaponData => "Weapon",
             ItemSOType.KeyData => "Key",
+            ItemSOType.EquipmentData => "Equipment",
             ItemSOType.SeedData => "Seed",
             ItemSOType.SaplingData => "Sapling",
             ItemSOType.CropData => "Crop",
@@ -1053,6 +1097,7 @@ public class Tool_BatchItemSOGenerator : EditorWindow
             ItemSOType.WeaponData => CreateWeaponData(sprite, itemID, itemName),
             ItemSOType.KeyData => CreateKeyData(sprite, itemID, itemName),
             ItemSOType.LockData => CreateLockData(sprite, itemID, itemName),
+            ItemSOType.EquipmentData => CreateEquipmentData(sprite, itemID, itemName),
             ItemSOType.SeedData => CreateSeedData(sprite, itemID, itemName),
             ItemSOType.SaplingData => CreateSaplingData(sprite, itemID, itemName),
             ItemSOType.CropData => CreateCropData(sprite, itemID, itemName),
@@ -1129,6 +1174,26 @@ public class Tool_BatchItemSOGenerator : EditorWindow
         data.keyLockType = KeyLockType.Lock;
         data.material = lockMaterial;
         data.unlockChance = 0f;  // 锁不需要开锁概率
+        return data;
+    }
+
+    private FarmGame.Data.EquipmentData CreateEquipmentData(Sprite sprite, int itemID, string itemName)
+    {
+        var data = ScriptableObject.CreateInstance<FarmGame.Data.EquipmentData>();
+        SetCommonProperties(data, sprite, itemID, itemName, ItemCategory.Special);
+        
+        // 装备不可堆叠
+        data.maxStackSize = 1;
+        
+        // 自动设置装备类型（策划不需要手动选）
+        data.equipmentType = selectedEquipmentType;
+        
+        // 设置防御力
+        if (setEquipmentDefense)
+        {
+            data.defense = equipmentDefense;
+        }
+        
         return data;
     }
 

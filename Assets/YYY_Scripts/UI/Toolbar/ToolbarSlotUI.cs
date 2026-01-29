@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using FarmGame.Data;
+using FarmGame.Data.Core;
 using FarmGame.UI;
 
 public class ToolbarSlotUI : MonoBehaviour, IPointerClickHandler
@@ -10,6 +11,10 @@ public class ToolbarSlotUI : MonoBehaviour, IPointerClickHandler
     [SerializeField] private Text amountText;
     [SerializeField] private Image selectedOverlay;
     [SerializeField] private Toggle toggle;
+    
+    // 🔥 V2 新增：耐久度条
+    private Image _durabilityBar;
+    private Image _durabilityBarBg;
 
     private InventoryService inventory;
     private ItemDatabase database;
@@ -85,6 +90,9 @@ public class ToolbarSlotUI : MonoBehaviour, IPointerClickHandler
             toggle.isOn = false;
 #endif
         }
+        
+        // 🔥 V2 新增：创建耐久度条
+        CreateDurabilityBar();
     }
 
     void OnEnable()
@@ -186,6 +194,8 @@ public class ToolbarSlotUI : MonoBehaviour, IPointerClickHandler
             // 使用统一的缩放适配工具清除图标
             if (iconImage) UIItemIconScaler.SetIconWithAutoScale(iconImage, null, null);
             if (amountText) amountText.text = "";
+            // 隐藏耐久度条
+            UpdateDurabilityBar(null);
             return;
         }
         var data = database.GetItemByID(s.itemId);
@@ -198,7 +208,119 @@ public class ToolbarSlotUI : MonoBehaviour, IPointerClickHandler
         {
             amountText.text = s.amount > 1 ? s.amount.ToString() : "";
         }
+        
+        // 🔥 V2 新增：更新耐久度条
+        var invItem = inventory.GetInventoryItem(index);
+        UpdateDurabilityBar(invItem);
     }
+    
+    #region 耐久度条
+    
+    /// <summary>
+    /// 创建耐久度条 UI（代码动态生成，无需美术资源）
+    /// Rule: P2-1 耐久度条样式 - 距离底部 6px，贴着 4px 边框，加 1px 黑色描边
+    /// </summary>
+    private void CreateDurabilityBar()
+    {
+        // 检查是否已存在
+        var existing = transform.Find("DurabilityBar");
+        if (existing != null)
+        {
+            _durabilityBar = existing.GetComponent<Image>();
+            var bgTransform = transform.Find("DurabilityBarBg");
+            if (bgTransform != null) _durabilityBarBg = bgTransform.GetComponent<Image>();
+            return;
+        }
+        
+        // 🔥 P2-1：计算位置参数
+        // 槽位边框 4px，耐久度条距离底部 6px
+        float borderPx = 4f;
+        float bottomPx = 6f;
+        float barHeight = 4f;
+        
+        // 创建背景条（黑色描边背景）
+        var bgGo = new GameObject("DurabilityBarBg");
+        bgGo.transform.SetParent(transform, false);
+        _durabilityBarBg = bgGo.AddComponent<Image>();
+        _durabilityBarBg.color = new Color(0.1f, 0.1f, 0.1f, 1f);
+        _durabilityBarBg.raycastTarget = false;
+        
+        var bgRt = (RectTransform)_durabilityBarBg.transform;
+        bgRt.anchorMin = new Vector2(0, 0);
+        bgRt.anchorMax = new Vector2(1, 0);
+        bgRt.pivot = new Vector2(0.5f, 0);
+        bgRt.offsetMin = new Vector2(borderPx, bottomPx - 1f);
+        bgRt.offsetMax = new Vector2(-borderPx, bottomPx + barHeight + 1f);
+        
+        // 创建前景条（绿色）
+        var barGo = new GameObject("DurabilityBar");
+        barGo.transform.SetParent(transform, false);
+        _durabilityBar = barGo.AddComponent<Image>();
+        _durabilityBar.color = new Color(0.2f, 0.8f, 0.2f, 1f);
+        _durabilityBar.raycastTarget = false;
+        
+        var barRt = (RectTransform)_durabilityBar.transform;
+        barRt.anchorMin = new Vector2(0, 0);
+        barRt.anchorMax = new Vector2(1, 0);
+        barRt.pivot = new Vector2(0, 0);
+        barRt.offsetMin = new Vector2(borderPx + 1f, bottomPx);
+        barRt.offsetMax = new Vector2(-borderPx - 1f, bottomPx + barHeight);
+        
+        // 默认隐藏
+        _durabilityBarBg.enabled = false;
+        _durabilityBar.enabled = false;
+    }
+    
+    /// <summary>
+    /// 更新耐久度条显示
+    /// Rule: P2-1 耐久度条样式 - 使用像素偏移控制宽度
+    /// </summary>
+    private void UpdateDurabilityBar(InventoryItem item)
+    {
+        if (_durabilityBar == null || _durabilityBarBg == null) return;
+        
+        // 如果物品为空或没有耐久度，隐藏耐久度条
+        if (item == null || !item.HasDurability)
+        {
+            _durabilityBarBg.enabled = false;
+            _durabilityBar.enabled = false;
+            return;
+        }
+        
+        // 显示耐久度条
+        _durabilityBarBg.enabled = true;
+        _durabilityBar.enabled = true;
+        
+        // 计算耐久度百分比
+        float percent = item.DurabilityPercent;
+        
+        // 🔥 P2-1：使用像素偏移控制宽度
+        var rt = (RectTransform)_durabilityBar.transform;
+        var bgRt = (RectTransform)_durabilityBarBg.transform;
+        
+        float bgWidth = bgRt.rect.width - 2f;
+        float barWidth = bgWidth * percent;
+        
+        float borderPx = 4f;
+        float rightOffset = -borderPx - 1f - (bgWidth - barWidth);
+        rt.offsetMax = new Vector2(rightOffset, rt.offsetMax.y);
+        
+        // 根据耐久度百分比改变颜色
+        Color barColor;
+        if (percent > 0.5f)
+        {
+            float t = (percent - 0.5f) * 2f;
+            barColor = Color.Lerp(Color.yellow, new Color(0.2f, 0.8f, 0.2f), t);
+        }
+        else
+        {
+            float t = percent * 2f;
+            barColor = Color.Lerp(Color.red, Color.yellow, t);
+        }
+        _durabilityBar.color = barColor;
+    }
+    
+    #endregion
 
     public void RefreshSelection()
     {

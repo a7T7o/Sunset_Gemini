@@ -285,16 +285,29 @@ public class OcclusionTransparency : MonoBehaviour
     }
     
     /// <summary>
-    /// 获取树木的成长阶段（用于动态调整连通距离）
+    /// 获取树木的成长阶段索引（用于动态调整连通距离）
+    /// 返回 0-5 的阶段索引，兼容新版 TreeController（原 V2）
     /// </summary>
-    public GrowthStage GetTreeGrowthStage()
+    public int GetTreeGrowthStageIndex()
     {
         TreeController treeController = GetComponent<TreeController>();
         if (treeController != null)
         {
-            return treeController.GetCurrentStage();
+            return treeController.GetCurrentStageIndex();
         }
-        return GrowthStage.Large; // 默认大树
+        return 5; // 默认最大阶段
+    }
+    
+    /// <summary>
+    /// 获取树木的成长阶段（旧版兼容，映射到 GrowthStage 枚举）
+    /// </summary>
+    public GrowthStage GetTreeGrowthStage()
+    {
+        int stageIndex = GetTreeGrowthStageIndex();
+        // 映射：0 = Sapling, 1-2 = Small, 3-5 = Large
+        if (stageIndex == 0) return GrowthStage.Sapling;
+        if (stageIndex <= 2) return GrowthStage.Small;
+        return GrowthStage.Large;
     }
     
     /// <summary>

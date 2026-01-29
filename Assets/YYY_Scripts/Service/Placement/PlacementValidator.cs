@@ -242,7 +242,7 @@ public class PlacementValidator
         Collider2D[] hits = Physics2D.OverlapBoxAll(cellCenter, boxSize, 0f);
         foreach (var hit in hits)
         {
-            var treeController = hit.GetComponentInParent<TreeControllerV2>();
+            var treeController = hit.GetComponentInParent<TreeController>();
             if (treeController != null)
                 return true;
             
@@ -252,8 +252,8 @@ public class PlacementValidator
                 return true;
         }
         
-        // 方法2：遍历场景中所有 TreeControllerV2，检查格子是否重叠
-        var allTrees = Object.FindObjectsByType<TreeControllerV2>(FindObjectsSortMode.None);
+        // 方法2：遍历场景中所有 TreeController，检查格子是否重叠
+        var allTrees = Object.FindObjectsByType<TreeController>(FindObjectsSortMode.None);
         foreach (var tree in allTrees)
         {
             // 获取树木占用的格子索引（树苗是 1x1）
@@ -290,7 +290,7 @@ public class PlacementValidator
         Collider2D[] hits = Physics2D.OverlapCircleAll(center, distance);
         foreach (var hit in hits)
         {
-            var treeController = hit.GetComponentInParent<TreeControllerV2>();
+            var treeController = hit.GetComponentInParent<TreeController>();
             if (treeController != null)
                 return true;
             
@@ -300,8 +300,8 @@ public class PlacementValidator
                 return true;
         }
         
-        // 方法2：遍历场景中所有 TreeControllerV2，检测树苗（Stage 0，无碰撞体）
-        var allTrees = Object.FindObjectsByType<TreeControllerV2>(FindObjectsSortMode.None);
+        // 方法2：遍历场景中所有 TreeController，检测树苗（Stage 0，无碰撞体）
+        var allTrees = Object.FindObjectsByType<TreeController>(FindObjectsSortMode.None);
         foreach (var tree in allTrees)
         {
             // 计算树根位置（父物体位置）

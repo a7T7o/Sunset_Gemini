@@ -497,11 +497,31 @@ public class PackagePanelTabsUI : MonoBehaviour
     {
         if (panelRoot == null || !panelRoot.activeSelf) return;
         
-        // ★ 关闭面板时取消拿取状态
-        CancelInteractionIfNeeded();
+        // ★ 关闭面板时处理手持物品（物品归位逻辑）
+        ReturnHeldItemsBeforeClose();
         
         panelRoot.SetActive(false);
         SetVisiblePageInactive();
+    }
+    
+    /// <summary>
+    /// 🔥 P1+-1：关闭前处理手持物品（物品归位逻辑）
+    /// </summary>
+    private void ReturnHeldItemsBeforeClose()
+    {
+        var interactionManager = InventoryInteractionManager.Instance;
+        if (interactionManager != null && interactionManager.IsHolding)
+        {
+            Debug.Log($"<color=yellow>[PackagePanelTabsUI] 关闭面板前归位手持物品</color>");
+            interactionManager.ReturnHeldItemToInventory();
+        }
+        
+        // 同时处理 SlotDragContext（箱子物品）
+        if (SlotDragContext.IsDragging)
+        {
+            Debug.Log($"<color=yellow>[PackagePanelTabsUI] 关闭面板前归位箱子物品</color>");
+            SlotDragContext.Cancel();
+        }
     }
     
     /// <summary>

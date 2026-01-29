@@ -36,6 +36,16 @@ public class InventoryPanelUI : MonoBehaviour
         BuildUpSlots();
         BuildDownSlots();
     }
+    
+    /// <summary>
+    /// Rule: P1-1 背包刷新 - 每次面板激活时强制刷新
+    /// </summary>
+    void OnEnable()
+    {
+        // 🔥 P1-1 修复：每次面板激活时强制刷新
+        // 确保从 BoxUI 切换回来时数据是最新的
+        RefreshAll();
+    }
 
     public void BuildUpSlots()
     {

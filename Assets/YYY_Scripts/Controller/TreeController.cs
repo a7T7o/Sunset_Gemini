@@ -3,179 +3,122 @@ using System.Collections.Generic;
 using FarmGame.Combat;
 using FarmGame.Data;
 using FarmGame.Events;
+using FarmGame.Utils;
 
 /// <summary>
-/// 成长阶段（3个）
-/// </summary>
-public enum GrowthStage
-{
-    Sapling,    // 树苗
-    Small,      // 小树
-    Large       // 大树
-}
-
-/// <summary>
-/// 树的状态
-/// </summary>额
-public enum TreeState
-{
-    Normal,         // 正常
-    Withered,       // 枯萎
-    Frozen,         // 冰封（仅冬季树苗）
-    Melted,         // 冰融化（冬季晴天）
-    Stump           // 树桩
-}
-
-/// <summary>
-/// 树木控制器 - 全新五季节系统
+/// 树木控制器 - 6阶段成长系统
 /// 
-/// GameObject结构（关键）：
+/// 核心特性：
+/// - 6阶段成长（0-5）
+/// - 每个阶段有独立的配置（StageConfig）
+/// - 每个阶段有独立的Sprite数据（StageSpriteData）
+/// - 阶段0只能用锄头挖出，阶段1-5用斧头砍
+/// - 阶段3-5有独立的树桩
+/// 
+/// GameObject结构：
 /// Tree_M1_00 (父物体) ← 位置 = 树根 = 种植点
 /// ├─ Tree (本脚本所在，SpriteRenderer) ← sprite底部对齐父物体中心
 /// └─ Shadow (同级兄弟，SpriteRenderer) ← 中心对齐父物体中心
-/// 
-/// 核心逻辑：
-/// - Tree.localY = -sprite.bounds.min.y （让sprite底部在父物体中心）
-/// - Shadow.localY = -shadowSprite.bounds.center.y （让Shadow中心在父物体中心）
-/// 
-/// 总计25个sprite：
-/// - 春3 + 夏3 + 早秋3 + 晚秋3 = 12个成长
-/// - 春夏树桩1 + 秋树桩1 + 冬树桩1 = 3个树桩
-/// - 夏枯萎2 + 秋枯萎2 = 4个枯萎
-/// - 冬挂冰3 + 冬融化2 = 5个冬季
 /// </summary>
 public class TreeController : MonoBehaviour, IResourceNode
 {
-    [System.Serializable]
-    public class SeasonGrowthData
+    #region 常量
+    private const int STAGE_COUNT = 6;
+    private const int STAGE_SAPLING = 0;
+    private const int STAGE_MAX = 5;
+    #endregion
+    
+    #region 序列化字段 - 阶段配置
+    [Header("━━━━ 6阶段配置 ━━━━")]
+    [Tooltip("6个阶段的配置（成长天数、血量、掉落表等）")]
+    [SerializeField] private StageConfig[] stageConfigs = new StageConfig[]
     {
-        [Header("成长阶段（3个）")]
-        [Tooltip("阶段0：树苗")]
-        public Sprite stage0_Sapling;
-        
-        [Tooltip("阶段1：小树")]
-        public Sprite stage1_Small;
-        
-        [Tooltip("阶段2：大树")]
-        public Sprite stage2_Large;
-    }
+        // 阶段0：树苗
+        new StageConfig { daysToNextStage = 1, health = 0, hasStump = false, stumpHealth = 0, enableCollider = false, enableOcclusion = false, acceptedToolType = ToolType.Hoe },
+        // 阶段1：小树苗
+        new StageConfig { daysToNextStage = 2, health = 4, hasStump = false, stumpHealth = 0, enableCollider = true, enableOcclusion = true, acceptedToolType = ToolType.Axe },
+        // 阶段2：中等树
+        new StageConfig { daysToNextStage = 2, health = 9, hasStump = false, stumpHealth = 4, enableCollider = true, enableOcclusion = true, acceptedToolType = ToolType.Axe },
+        // 阶段3：大树
+        new StageConfig { daysToNextStage = 4, health = 17, hasStump = true, stumpHealth = 9, enableCollider = true, enableOcclusion = true, acceptedToolType = ToolType.Axe },
+        // 阶段4：成熟树
+        new StageConfig { daysToNextStage = 5, health = 28, hasStump = true, stumpHealth = 12, enableCollider = true, enableOcclusion = true, acceptedToolType = ToolType.Axe },
+        // 阶段5：完全成熟
+        new StageConfig { daysToNextStage = 0, health = 40, hasStump = true, stumpHealth = 16, enableCollider = true, enableOcclusion = true, acceptedToolType = ToolType.Axe }
+    };
     
-    [System.Serializable]
-    public class WitherableSeasonData : SeasonGrowthData
-    {
-        [Header("枯萎状态")]
-        [Tooltip("小树枯萎")]
-        public Sprite withered_Small;
-        
-        [Tooltip("大树枯萎")]
-        public Sprite withered_Large;
-    }
+    [Header("━━━━ 6阶段Sprite数据 ━━━━")]
+    [Tooltip("6个阶段的Sprite配置")]
+    [SerializeField] private TreeSpriteConfig spriteConfig;
+    #endregion
     
-    [System.Serializable]
-    public class WinterSeasonData
-    {
-        [Header("冬季挂冰状态（3个阶段）")]
-        [Tooltip("树苗挂冰（休眠）")]
-        public Sprite frozen_Sapling;
-        
-        [Tooltip("小树挂冰")]
-        public Sprite frozen_Small;
-        
-        [Tooltip("大树挂冰")]
-        public Sprite frozen_Large;
-        
-        [Header("冬季融化状态（仅树苗）")]
-        [Tooltip("树苗融化（显示萎缩状态）")]
-        public Sprite melted_Sapling;
-        
-        [Space(10)]
-        [Header("⚠️ 说明")]
-        [Tooltip("• 挂冰=下雪天（1,5,11,21,26）\n• 融化=晴天（3,8,17,24,28）\n• Small/Large融化直接用秋季枯萎外观\n• 冬季不成长，春季全部恢复")]
-        public bool winterExplanation = true;
-    }
-    
-    [Header("━━━━ 春夏成长数据 ━━━━")]
-    [Tooltip("春季（早春 + 晚春早夏）")]
-    public SeasonGrowthData spring;
-    
-    [Tooltip("夏季（晚春早夏 + 晚夏早秋，可枯萎）")]
-    public WitherableSeasonData summer;
-    
-    [Header("━━━━ 秋季成长数据（两套）━━━━")]
-    [Tooltip("早秋（晚夏早秋，可枯萎）")]
-    public WitherableSeasonData fall_Early;
-    
-    [Tooltip("晚秋（单独使用）")]
-    public SeasonGrowthData fall_Late;
-    
-    [Header("━━━━ 冬季数据 ━━━━")]
-    [Tooltip("冬季（挂冰/融化两种状态）")]
-    public WinterSeasonData winter;
-    
-    [Header("━━━━ 树桩状态（3种）━━━━")]
-    [Tooltip("春夏共用树桩")]
-    public Sprite stump_SpringSummer;
-    
-    [Tooltip("秋季树桩")]
-    public Sprite stump_Fall;
-    
-    [Tooltip("冬季树桩")]
-    public Sprite stump_Winter;
-    
+    #region 序列化字段 - 当前状态
     [Header("━━━━ 当前状态 ━━━━")]
     [Tooltip("树木ID（基于InstanceID，0-9999循环）")]
     [SerializeField] private int treeID = -1;
     
+    [Tooltip("当前阶段索引（0-5）")]
+    [Range(0, 5)]
+    [SerializeField] private int currentStageIndex = 0;
+    
+    [Tooltip("当前树的状态")]
+    [SerializeField] private TreeState currentState = TreeState.Normal;
+    
     [Tooltip("当前日历季节（只读，由SeasonManager控制）")]
     [SerializeField] private SeasonManager.Season currentSeason = SeasonManager.Season.Spring;
+    #endregion
     
-    [Tooltip("当前成长阶段（可调试）")]
-    public GrowthStage currentStage = GrowthStage.Large;
-    
-    [Tooltip("当前树的状态（可调试）")]
-    public TreeState currentState = TreeState.Normal;
-    
+    #region 序列化字段 - 成长设置
     [Header("━━━━ 成长设置 ━━━━")]
     [Tooltip("是否启用自动成长（基于天数）")]
-    public bool autoGrow = true;
-    
-    [Tooltip("树苗成长为小树需要的天数")]
-    public int daysToStage1 = 2;
-    
-    [Tooltip("小树成长为大树需要的天数")]
-    public int daysToStage2 = 3;
+    [SerializeField] private bool autoGrow = true;
     
     [Tooltip("种植日期（游戏开始后的第几天，0=未种植）")]
     [SerializeField] private int plantedDay = 0;
     
-    [Header("━━━━ 影子缩放（自动应用到同级Shadow）━━━━")]
-    [Tooltip("⚠️ 只有小树和大树有影子，树苗和树桩无影子")]
-    public bool shadowExplanation = true;
+    [Tooltip("当前阶段已经过的天数")]
+    [SerializeField] private int daysInCurrentStage = 0;
     
-    [Tooltip("小树阶段的影子缩放（0.0-2.0）")]
-    [Range(0f, 2f)]
-    public float shadowScaleStage1 = 0.8f;
+    [Header("成长空间检测")]
+    [Tooltip("是否启用成长空间检测（检测周围是否有足够空间成长）")]
+    [SerializeField] private bool enableGrowthSpaceCheck = true;
     
-    [Tooltip("大树阶段的影子缩放（0.0-2.0）")]
-    [Range(0f, 2f)]
-    public float shadowScaleStage2 = 1.0f;
+    [Tooltip("阻挡成长的物体标签（多选）")]
+    [SerializeField] private string[] growthObstacleTags = new string[] { "Tree", "Rock", "Building" };
     
+    [Tooltip("成长受阻时是否显示调试信息")]
+    [SerializeField] private bool showGrowthBlockedInfo = true;
+    #endregion
+    
+    #region 序列化字段 - 血量
+    [Header("━━━━ 血量状态 ━━━━")]
+    [Tooltip("当前血量")]
+    [SerializeField] private int currentHealth = 0;
+    
+    [Tooltip("树桩当前血量（仅树桩状态有效）")]
+    [SerializeField] private int currentStumpHealth = 0;
+    #endregion
+    
+    #region 序列化字段 - 影子
+    [Header("━━━━ 影子设置 ━━━━")]
+    [Tooltip("阶段1-5的影子配置（5个元素，阶段0无影子）")]
+    [SerializeField] private ShadowConfig[] shadowConfigs = new ShadowConfig[]
+    {
+        new ShadowConfig { sprite = null, scale = 0f },    // 阶段1（无影子）
+        new ShadowConfig { sprite = null, scale = 0.6f },  // 阶段2
+        new ShadowConfig { sprite = null, scale = 0.8f },  // 阶段3
+        new ShadowConfig { sprite = null, scale = 0.9f },  // 阶段4
+        new ShadowConfig { sprite = null, scale = 1.0f }   // 阶段5
+    };
+    #endregion
+    
+    #region 序列化字段 - Sprite对齐
     [Header("━━━━ Sprite底部对齐 ━━━━")]
     [Tooltip("是否自动对齐Sprite底部到父物体位置（种植点）")]
-    public bool alignSpriteBottom = true;
+    [SerializeField] private bool alignSpriteBottom = true;
+    #endregion
     
-    [Header("━━━━ 砍伐设置 ━━━━")]
-    [Tooltip("小树需要砍伐的次数")]
-    [Range(1, 10)]
-    public int chopCountSmall = 3;
-    
-    [Tooltip("大树需要砍伐的次数")]
-    [Range(1, 20)]
-    public int chopCountLarge = 7;
-    
-    [Tooltip("当前剩余砍伐次数")]
-    [SerializeField] private int currentChopCount = 0;
-    
+    #region 序列化字段 - 倒下动画
     [Header("━━━━ 倒下动画 ━━━━")]
     [Tooltip("是否启用倒下动画")]
     [SerializeField] private bool enableFallAnimation = true;
@@ -184,28 +127,18 @@ public class TreeController : MonoBehaviour, IResourceNode
     [Range(0.5f, 2f)]
     [SerializeField] private float fallDuration = 0.8f;
     
-    [Header("向上倒参数（可调试）")]
-    [Tooltip("Y轴最大拉长倍数")]
+    [Header("向上倒参数")]
     [Range(1f, 3f)]
     [SerializeField] private float fallUpMaxStretch = 1.2f;
     
-    [Tooltip("Y轴最终缩放倍数（1=不缩放）")]
     [Range(0.01f, 2f)]
     [SerializeField] private float fallUpMinScale = 1f;
     
-    [Tooltip("拉长阶段占比（0-1）")]
     [Range(0.1f, 0.9f)]
     [SerializeField] private float fallUpStretchPhase = 0.4f;
+    #endregion
     
-    // 记录最后一次命中时玩家的朝向（0=Down, 1=Up, 2=Side）和 flipX
-    // ✅ 修正：Direction 参数来自 PlayerAnimController.ConvertToAnimatorDirection
-    private int lastHitPlayerDirection = 0;
-    private bool lastHitPlayerFlipX = false;
-    
-    [Header("━━━━ 掉落设置 ━━━━")]
-    [Tooltip("掉落表（定义砍伐后掉落的物品）")]
-    [SerializeField] private FarmGame.Data.DropTable dropTable;
-    
+    #region 序列化字段 - 音效
     [Header("━━━━ 音效设置 ━━━━")]
     [Tooltip("砍击音效（每次命中播放）")]
     [SerializeField] private AudioClip chopHitSound;
@@ -213,54 +146,130 @@ public class TreeController : MonoBehaviour, IResourceNode
     [Tooltip("砍倒音效（树木倒下时播放）")]
     [SerializeField] private AudioClip chopFellSound;
     
+    [Tooltip("挖出音效（锄头挖出树苗时播放）")]
+    [SerializeField] private AudioClip digOutSound;
+    
+    [Tooltip("斧头等级不足音效（金属碰撞）")]
+    [SerializeField] private AudioClip tierInsufficientSound;
+    
     [Tooltip("音效音量")]
     [Range(0f, 1f)]
     [SerializeField] private float soundVolume = 0.8f;
+    #endregion
     
+    #region 序列化字段 - 经验配置
+    [Header("━━━━ 砍树经验 ━━━━")]
+    [Tooltip("各阶段砍伐经验（阶段0-5）")]
+    [SerializeField] private int[] stageExperience = new int[] { 0, 0, 2, 4, 6, 20 };
+    #endregion
+    
+    #region 序列化字段 - 掉落配置
+    [Header("━━━━ 掉落配置 ━━━━")]
+    [Tooltip("掉落的物品 SO（如木头）")]
+    [SerializeField] private ItemData dropItemData;
+    
+    [Tooltip("各阶段掉落数量（阶段0-5）")]
+    [SerializeField] private int[] stageDropAmounts = new int[] { 0, 1, 2, 3, 5, 8 };
+    
+    [Tooltip("树桩掉落数量（阶段0-5，只有阶段3-5有效）")]
+    [SerializeField] private int[] stumpDropAmounts = new int[] { 0, 0, 0, 1, 2, 3 };
+    
+    [Tooltip("掉落物分散半径")]
+    [Range(0.1f, 1f)]
+    [SerializeField] private float dropSpreadRadius = 0.4f;
+    #endregion
+    
+    #region 序列化字段 - 调试
     [Header("━━━━ 调试 ━━━━")]
     [SerializeField] private bool showDebugInfo = false;
     
-    [Tooltip("编辑器实时预览（Inspector修改时自动更新）")]
-    public bool editorPreview = true;
+    [Tooltip("编辑器实时预览")]
+    [SerializeField] private bool editorPreview = true;
+    #endregion
     
-    internal SpriteRenderer spriteRenderer;
-    private OcclusionTransparency occlusionTransparency; // 遮挡透明组件引用
+    // ★ enableSeasonEvents 已移除：调试开关已移至 TimeManager 集中管理
+    // 树木始终订阅所有事件，由 TimeManager 的事件发布开关控制是否触发
+    
+    #region 私有字段
+    private SpriteRenderer spriteRenderer;
+    private OcclusionTransparency occlusionTransparency;
     private int lastCheckDay = -1;
-    private bool isWeatherWithered = false; // 天气导致的枯萎（区分手动枯萎）
-    private bool isFrozenSapling = false;   // 冬季冰封的树苗（春季可恢复）
+    private bool isWeatherWithered = false;
+    // ★ isFrozenSapling 已移除：树苗在冬季直接死亡，不再需要冰封状态
     
-    // 编辑器预览
+    // 影子缓存
+    private Transform _shadowTransform;
+    private SpriteRenderer _shadowRenderer;
+    private Sprite _originalShadowSprite;
+    
+    // 记录最后一次命中时玩家的朝向
+    private int lastHitPlayerDirection = 0;
+    private bool lastHitPlayerFlipX = false;
+    
     #if UNITY_EDITOR
-    private GrowthStage lastEditorStage;
+    private int lastEditorStageIndex;
     private TreeState lastEditorState;
     #endif
+    #endregion
     
-    void Start()
+    #region 属性
+    /// <summary>
+    /// 当前阶段配置
+    /// </summary>
+    public StageConfig CurrentStageConfig => GetStageConfig(currentStageIndex);
+    
+    /// <summary>
+    /// 当前阶段Sprite数据
+    /// </summary>
+    public StageSpriteData CurrentSpriteData => spriteConfig?.GetStageData(currentStageIndex);
+    #endregion
+
+    
+    #region Unity生命周期
+    private void Awake()
+    {
+        // 初始化阶段配置（如果为空则使用默认配置）
+        if (stageConfigs == null || stageConfigs.Length != STAGE_COUNT)
+        {
+            stageConfigs = StageConfigFactory.CreateDefaultConfigs();
+        }
+    }
+    
+    private void Start()
     {
         spriteRenderer = GetComponentInChildren<SpriteRenderer>();
         
         if (spriteRenderer == null)
         {
-            Debug.LogError($"[TreeController] {gameObject.name} 缺少SpriteRenderer组件！（请确保Tree子物体上有SpriteRenderer）");
+            Debug.LogError($"[TreeController] {gameObject.name} 缺少SpriteRenderer组件！");
             enabled = false;
             return;
         }
         
-        // ✅ 缓存 OcclusionTransparency 组件引用
+        // 缓存组件引用
         occlusionTransparency = GetComponent<OcclusionTransparency>();
         
-        // ✅ 基于InstanceID生成树木ID（0-9999循环）
+        // 缓存影子引用
+        InitializeShadowCache();
+        
+        // 生成树木ID
         treeID = Mathf.Abs(gameObject.GetInstanceID()) % 10000;
         
-        // 初始化编辑器预览变量
         #if UNITY_EDITOR
-        lastEditorStage = currentStage;
+        lastEditorStageIndex = currentStageIndex;
         lastEditorState = currentState;
         #endif
         
-        // 订阅SeasonManager
-        SeasonManager.OnSeasonChanged += OnSeasonChangedByManager;
-        SeasonManager.OnVegetationSeasonChanged += OnVegetationSeasonChangedByManager;
+        // ★ 始终订阅所有事件（调试开关已移至 TimeManager 集中管理）
+        // 订阅季节事件
+        SeasonManager.OnSeasonChanged += OnSeasonChanged;
+        SeasonManager.OnVegetationSeasonChanged += OnVegetationSeasonChanged;
+        
+        // 订阅天气事件
+        WeatherSystem.OnPlantsWither += OnWeatherWither;
+        WeatherSystem.OnPlantsRecover += OnWeatherRecover;
+        WeatherSystem.OnWinterSnow += OnWinterSnow;
+        WeatherSystem.OnWinterMelt += OnWinterMelt;
         
         // 同步当前季节
         if (SeasonManager.Instance != null)
@@ -268,10 +277,19 @@ public class TreeController : MonoBehaviour, IResourceNode
             currentSeason = SeasonManager.Instance.GetCurrentSeason();
         }
         
-        // 订阅TimeManager（成长）
+        // 初始检查天气
+        if (WeatherSystem.Instance != null && WeatherSystem.Instance.IsWithering())
+        {
+            OnWeatherWither();
+        }
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=lime>[TreeController] {gameObject.name} 季节/天气事件已订阅</color>");
+        
+        // 订阅每日成长事件
         if (autoGrow)
         {
-            TimeManager.OnDayChanged += OnDayChangedByTimeManager;
+            TimeManager.OnDayChanged += OnDayChanged;
             
             if (plantedDay == 0 && TimeManager.Instance != null)
             {
@@ -279,180 +297,179 @@ public class TreeController : MonoBehaviour, IResourceNode
             }
         }
         
-        // 订阅WeatherSystem
-        WeatherSystem.OnPlantsWither += OnWeatherWither;
-        WeatherSystem.OnPlantsRecover += OnWeatherRecover;
-        WeatherSystem.OnWinterSnow += OnWinterSnow;
-        WeatherSystem.OnWinterMelt += OnWinterMelt;
+        // 初始化血量
+        InitializeHealth();
         
-        // 初始检查天气
-        if (WeatherSystem.Instance != null && WeatherSystem.Instance.IsWithering())
-        {
-            OnWeatherWither();
-        }
-        
-        // ✅ 初始化显示（持续重试直到SeasonManager就绪）
+        // 初始化显示
         StartCoroutine(WaitForSeasonManagerAndInitialize());
         
-        // ✅ 注册到资源节点注册表
+        // 注册到资源节点注册表
         if (ResourceNodeRegistry.Instance != null)
         {
             ResourceNodeRegistry.Instance.Register(this, gameObject.GetInstanceID());
         }
     }
     
-    /// <summary>
-    /// 等待SeasonManager初始化完成后再初始化显示
-    /// </summary>
+    private void OnDestroy()
+    {
+        // ★ 始终取消订阅所有事件
+        SeasonManager.OnSeasonChanged -= OnSeasonChanged;
+        SeasonManager.OnVegetationSeasonChanged -= OnVegetationSeasonChanged;
+        TimeManager.OnDayChanged -= OnDayChanged;
+        WeatherSystem.OnPlantsWither -= OnWeatherWither;
+        WeatherSystem.OnPlantsRecover -= OnWeatherRecover;
+        WeatherSystem.OnWinterSnow -= OnWinterSnow;
+        WeatherSystem.OnWinterMelt -= OnWinterMelt;
+        
+        if (ResourceNodeRegistry.Instance != null)
+        {
+            ResourceNodeRegistry.Instance.Unregister(gameObject.GetInstanceID());
+        }
+    }
+    #endregion
+    
+    #region 初始化
     private System.Collections.IEnumerator WaitForSeasonManagerAndInitialize()
     {
         int retryCount = 0;
         while (SeasonManager.Instance == null && retryCount < 100)
         {
             retryCount++;
-            yield return null; // 等待一帧
+            yield return null;
         }
 
         if (SeasonManager.Instance == null)
         {
-            Debug.LogError($"[TreeController] {transform.parent?.name}/{gameObject.name} - SeasonManager初始化超时", gameObject);
+            Debug.LogError($"[TreeController] {gameObject.name} - SeasonManager初始化超时");
             yield break;
         }
 
         InitializeDisplay();
     }
     
-    /// <summary>
-    /// 初始化显示（确保在SeasonManager就绪后调用）
-    /// </summary>
     private void InitializeDisplay()
     {
-        if (SeasonManager.Instance == null)
-        {
-            Debug.LogError($"<color=red>❌ [{transform.parent.name}/{gameObject.name}] SeasonManager仍未初始化！</color>", gameObject);
-            return;
-        }
+        if (SeasonManager.Instance == null) return;
         
-        // 同步当前季节（如果Start时未能同步）
-        if (currentSeason == SeasonManager.Season.Spring && SeasonManager.Instance.GetCurrentSeason() != SeasonManager.Season.Spring)
-        {
-            currentSeason = SeasonManager.Instance.GetCurrentSeason();
-        }
-        
-        UpdateSprite();
-    }
-    
-    void OnDestroy()
-    {
-        SeasonManager.OnSeasonChanged -= OnSeasonChangedByManager;
-        SeasonManager.OnVegetationSeasonChanged -= OnVegetationSeasonChangedByManager;
-        TimeManager.OnDayChanged -= OnDayChangedByTimeManager;
-        WeatherSystem.OnPlantsWither -= OnWeatherWither;
-        WeatherSystem.OnPlantsRecover -= OnWeatherRecover;
-        WeatherSystem.OnWinterSnow -= OnWinterSnow;
-        WeatherSystem.OnWinterMelt -= OnWinterMelt;
-        
-        // ✅ 从资源节点注册表注销
-        if (ResourceNodeRegistry.Instance != null)
-        {
-            ResourceNodeRegistry.Instance.Unregister(gameObject.GetInstanceID());
-        }
-    }
-    
-    /// <summary>
-    /// VegetationSeasonManager植被季节变化回调（由全局管理器通知）
-    /// </summary>
-    private void OnVegetationSeasonChangedByManager()
-    {
-        // 植被季节由VegetationSeasonManager全局管理，这里只需更新显示
+        currentSeason = SeasonManager.Instance.GetCurrentSeason();
         UpdateSprite();
     }
     
     /// <summary>
-    /// SeasonManager季节变化回调
+    /// 初始化血量（根据当前阶段）
     /// </summary>
-    private void OnSeasonChangedByManager(SeasonManager.Season newSeason)
+    private void InitializeHealth()
+    {
+        var config = CurrentStageConfig;
+        if (config != null)
+        {
+            currentHealth = config.health;
+        }
+    }
+    
+    /// <summary>
+    /// 初始化影子缓存
+    /// </summary>
+    private void InitializeShadowCache()
+    {
+        if (transform.parent == null) return;
+        
+        _shadowTransform = transform.parent.Find("Shadow");
+        if (_shadowTransform != null)
+        {
+            _shadowRenderer = _shadowTransform.GetComponent<SpriteRenderer>();
+            if (_shadowRenderer != null)
+            {
+                _originalShadowSprite = _shadowRenderer.sprite;
+            }
+        }
+    }
+    #endregion
+    
+    #region 阶段配置访问
+    /// <summary>
+    /// 获取指定阶段的配置
+    /// </summary>
+    private StageConfig GetStageConfig(int stageIndex)
+    {
+        if (stageConfigs == null || stageIndex < 0 || stageIndex >= stageConfigs.Length)
+        {
+            return null;
+        }
+        return stageConfigs[stageIndex];
+    }
+    #endregion
+    
+    #region 事件回调
+    private void OnSeasonChanged(SeasonManager.Season newSeason)
     {
         currentSeason = newSeason;
         
-        // ✅ 春季：所有枯萎植物复苏（保持成长阶段）
+        // 春季：所有枯萎植物复苏
         if (newSeason == SeasonManager.Season.Spring)
         {
-            if (isFrozenSapling)
-            {
-                isFrozenSapling = false;
-                
-                if (showDebugInfo)
-                {
-                    Debug.Log($"<color=lime>[TreeController] {gameObject.name} 春季到来，冰封树苗解冻！</color>");
-                }
-            }
-            
-            // 所有枯萎状态恢复正常
             if (currentState == TreeState.Withered || currentState == TreeState.Frozen || currentState == TreeState.Melted)
             {
                 currentState = TreeState.Normal;
                 isWeatherWithered = false;
-                
                 if (showDebugInfo)
-                {
-                    Debug.Log($"<color=lime>[TreeController] {gameObject.name} 春季复苏！阶段保持: {currentStage}</color>");
-                }
+                    Debug.Log($"<color=lime>[TreeController] {gameObject.name} 春季复苏！</color>");
             }
         }
         
-        // 冬季：树苗冰封，其他进入枯萎
+        // 冬季：树苗直接死亡（销毁）
         if (newSeason == SeasonManager.Season.Winter)
         {
-            if (currentStage == GrowthStage.Sapling && currentState == TreeState.Normal)
+            if (currentStageIndex == STAGE_SAPLING)
             {
-                isFrozenSapling = true;
-                currentState = TreeState.Frozen;
-                
+                // ★ 树苗在冬季直接死亡，销毁物体
                 if (showDebugInfo)
-                {
-                    Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 冬季到来，树苗冰封！</color>");
-                }
+                    Debug.Log($"<color=red>[TreeController] {gameObject.name} 冬季到来，树苗死亡！</color>");
+                
+                DestroyTree();
+                return;
             }
         }
+        
+        UpdateSprite();
     }
     
-    /// <summary>
-    /// TimeManager每日回调
-    /// </summary>
-    private void OnDayChangedByTimeManager(int year, int seasonDay, int totalDays)
+    private void OnVegetationSeasonChanged()
     {
-        // 成长检查
+        UpdateSprite();
+    }
+    
+    private void OnDayChanged(int year, int seasonDay, int totalDays)
+    {
         if (lastCheckDay == totalDays) return;
         lastCheckDay = totalDays;
         
+        // 不成长的条件
         if (currentState != TreeState.Normal) return;
-        if (currentStage == GrowthStage.Large) return;
-        
-        // 冬季不成长
+        if (currentStageIndex >= STAGE_MAX) return;
         if (currentSeason == SeasonManager.Season.Winter) return;
-        
-        // 枯萎时不成长
         if (isWeatherWithered) return;
         
-        int daysSincePlanted = totalDays - plantedDay;
-        int requiredDays = GetRequiredDaysForNextStage();
+        // 增加当前阶段天数
+        daysInCurrentStage++;
         
-        if (daysSincePlanted >= requiredDays)
+        // 检查是否可以成长到下一阶段
+        var config = CurrentStageConfig;
+        if (config != null && config.daysToNextStage > 0 && daysInCurrentStage >= config.daysToNextStage)
         {
-            Grow();
-            plantedDay = totalDays;
-            
-            if (showDebugInfo)
+            // ★ 新增：检查成长空间
+            if (enableGrowthSpaceCheck && !CanGrowToNextStage())
             {
-                Debug.Log($"<color=lime>[TreeController] {gameObject.name} 成长！{currentStage}</color>");
+                // 空间不足，无法成长，但天数不重置（继续等待空间）
+                if (showGrowthBlockedInfo && showDebugInfo)
+                    Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 成长空间不足，等待空间...</color>");
+                return;
             }
+            
+            GrowToNextStage();
         }
     }
     
-    /// <summary>
-    /// 天气枯萎回调
-    /// </summary>
     private void OnWeatherWither()
     {
         if (currentState == TreeState.Normal)
@@ -460,17 +477,11 @@ public class TreeController : MonoBehaviour, IResourceNode
             isWeatherWithered = true;
             currentState = TreeState.Withered;
             UpdateSprite();
-            
             if (showDebugInfo)
-            {
                 Debug.Log($"<color=red>[TreeController] {gameObject.name} 因天气枯萎</color>");
-            }
         }
     }
     
-    /// <summary>
-    /// 天气恢复回调
-    /// </summary>
     private void OnWeatherRecover()
     {
         if (isWeatherWithered)
@@ -478,698 +489,286 @@ public class TreeController : MonoBehaviour, IResourceNode
             isWeatherWithered = false;
             currentState = TreeState.Normal;
             UpdateSprite();
-            
             if (showDebugInfo)
-            {
                 Debug.Log($"<color=green>[TreeController] {gameObject.name} 天气恢复</color>");
-            }
         }
     }
     
-    /// <summary>
-    /// 冬季下雪回调（树苗休眠，挂冰）
-    /// </summary>
     private void OnWinterSnow()
     {
         if (currentSeason != SeasonManager.Season.Winter) return;
         
-        if (currentStage == GrowthStage.Sapling)
+        // ★ 树苗在冬季已经死亡，不会进入这里
+        // 只有阶段1-5的树木会进入冰封状态
+        if (currentStageIndex == STAGE_SAPLING)
         {
-            // 树苗冰封
-            isFrozenSapling = true;
-            currentState = TreeState.Frozen;
-        }
-        else
-        {
-            // Small/Large进入冰封状态
-            currentState = TreeState.Frozen;
+            // 树苗不应该存在于冬季，如果存在则销毁
+            if (showDebugInfo)
+                Debug.Log($"<color=red>[TreeController] {gameObject.name} 冬季下雪，树苗死亡！</color>");
+            DestroyTree();
+            return;
         }
         
+        currentState = TreeState.Frozen;
         UpdateSprite();
-        
         if (showDebugInfo)
-        {
             Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 下雪天，进入冰封状态</color>");
-        }
     }
     
-    /// <summary>
-    /// 冬季融化回调（大太阳，冰雪融化）
-    /// </summary>
     private void OnWinterMelt()
     {
         if (currentSeason != SeasonManager.Season.Winter) return;
         
-        // 进入融化状态
+        // ★ 树苗在冬季已经死亡，不会进入这里
+        if (currentStageIndex == STAGE_SAPLING)
+        {
+            // 树苗不应该存在于冬季，如果存在则销毁
+            if (showDebugInfo)
+                Debug.Log($"<color=red>[TreeController] {gameObject.name} 冬季融化，树苗死亡！</color>");
+            DestroyTree();
+            return;
+        }
+        
         currentState = TreeState.Melted;
-        
         UpdateSprite();
-        
         if (showDebugInfo)
-        {
             Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 大太阳，冰雪融化</color>");
-        }
+    }
+    #endregion
+
+    
+    #region 成长系统
+    /// <summary>
+    /// 检查是否有足够空间成长到下一阶段
+    /// ★ v5 重构：基于 Collider 边界的四方向边距检测
+    /// </summary>
+    /// <returns>true 表示可以成长，false 表示空间不足</returns>
+    public bool CanGrowToNextStage()
+    {
+        if (!enableGrowthSpaceCheck) return true;
+        if (currentStageIndex >= STAGE_MAX) return false;
+        
+        int nextStage = currentStageIndex + 1;
+        var nextStageConfig = GetStageConfig(nextStage);
+        if (nextStageConfig == null) return true;
+        
+        // 使用下一阶段的边距配置进行检测
+        return CheckGrowthMargin(nextStageConfig.verticalMargin, nextStageConfig.horizontalMargin);
     }
     
     /// <summary>
-    /// 获取成长到下一阶段需要的天数
+    /// 检测四个方向的成长边距
     /// </summary>
-    private int GetRequiredDaysForNextStage()
+    /// <param name="verticalMargin">上下边距</param>
+    /// <param name="horizontalMargin">左右边距</param>
+    /// <returns>true 表示所有方向都无障碍物，可以成长</returns>
+    private bool CheckGrowthMargin(float verticalMargin, float horizontalMargin)
     {
-        return currentStage switch
-        {
-            GrowthStage.Sapling => daysToStage1,  // 树苗→小树
-            GrowthStage.Small => daysToStage2,    // 小树→大树
-            _ => int.MaxValue                      // 大树不再成长
-        };
-    }
-    
-    /// <summary>
-    /// 更新Sprite显示
-    /// </summary>
-    public void UpdateSprite()
-    {
-        if (spriteRenderer == null) return;
-        
-        Sprite targetSprite = GetCurrentSprite();
-        var vegSeason = SeasonManager.Instance != null ? SeasonManager.Instance.GetCurrentVegetationSeason() : SeasonManager.VegetationSeason.Spring;
-        
-        if (targetSprite != null)
-        {
-            spriteRenderer.sprite = targetSprite;
-            spriteRenderer.enabled = true;
-            
-            // ✅ 对齐sprite底部和更新Shadow
-            if (alignSpriteBottom)
-            {
-                AlignSpriteBottom();
-            }
-            UpdateShadowScale();
-        }
-        else
-        {
-            // 冬季融化的树苗 → 隐藏
-            if (currentSeason == SeasonManager.Season.Winter && currentStage == GrowthStage.Sapling && currentState == TreeState.Melted)
-            {
-                spriteRenderer.enabled = false;
-                UpdateShadowScale(); // ← 也要更新Shadow
-            }
-            else
-            {
-                UpdateShadowScale(); // ← 无论如何都要更新Shadow
-            }
-        }
-    }
-    
-    /// <summary>
-    /// 获取当前应该显示的Sprite
-    /// </summary>
-    private Sprite GetCurrentSprite()
-    {
-        // ✅ 从SeasonManager获取当前植被季节
-        if (SeasonManager.Instance == null)
-        {
-            // 💡 编辑器下或游戏启动初期，SeasonManager可能未初始化，这是正常的
-            // 只在游戏运行且超过1秒后才报错
-            if (Application.isPlaying && Time.timeSinceLevelLoad > 1f)
-            {
-                Debug.LogError($"<color=red>❌ [{transform.parent?.name}/{gameObject.name}] SeasonManager.Instance == null！</color>", gameObject);
-            }
-            return null;
-        }
-        
-        SeasonManager.VegetationSeason vegSeason = SeasonManager.Instance.GetCurrentVegetationSeason();
-        
-        // 树桩状态
-        if (currentState == TreeState.Stump)
-        {
-            return vegSeason switch
-            {
-                SeasonManager.VegetationSeason.Spring => stump_SpringSummer,
-                SeasonManager.VegetationSeason.Summer => stump_SpringSummer,
-                SeasonManager.VegetationSeason.EarlyFall => stump_Fall,
-                SeasonManager.VegetationSeason.LateFall => stump_Fall,
-                SeasonManager.VegetationSeason.Winter => stump_Winter,
-                _ => stump_SpringSummer
-            };
-        }
-        
-        // 冬季特殊处理
-        if (vegSeason == SeasonManager.VegetationSeason.Winter)
-        {
-            return GetWinterSprite();
-        }
-        
-        // 枯萎状态
-        if (currentState == TreeState.Withered)
-        {
-            return GetWitheredSprite();
-        }
-        
-        // 正常成长状态
-        return GetNormalSprite();
-    }
-    
-    /// <summary>
-    /// 获取冬季Sprite
-    /// </summary>
-    private Sprite GetWinterSprite()
-    {
-        // 冰封状态（挂冰）- 下雪天
-        if (currentState == TreeState.Frozen || currentState == TreeState.Normal)
-        {
-            return currentStage switch
-            {
-                GrowthStage.Sapling => winter.frozen_Sapling,
-                GrowthStage.Small => winter.frozen_Small,
-                GrowthStage.Large => winter.frozen_Large,
-                _ => null
-            };
-        }
-        
-        // 融化状态（晴天）- 树苗单独sprite，Small/Large用秋季枯萎
-        if (currentState == TreeState.Melted)
-        {
-            return currentStage switch
-            {
-                GrowthStage.Sapling => winter.melted_Sapling, // ✅ 树苗单独融化sprite
-                GrowthStage.Small => fall_Early.withered_Small, // ✅ 直接用秋季枯萎
-                GrowthStage.Large => fall_Early.withered_Large, // ✅ 直接用秋季枯萎
-                _ => null
-            };
-        }
-        
-        return null;
-    }
-    
-    /// <summary>
-    /// 获取枯萎Sprite（枯萎的树也跟随季节外观）
-    /// </summary>
-    private Sprite GetWitheredSprite()
-    {
-        // 树苗不显示枯萎，直接消失
-        if (currentStage == GrowthStage.Sapling) return null;
-        
-        // ✅ 从SeasonManager获取当前植被季节
-        if (SeasonManager.Instance == null) return null;
-        SeasonManager.VegetationSeason vegSeason = SeasonManager.Instance.GetCurrentVegetationSeason();
-        
-        // ✅ 枯萎状态跟随季节外观
-        switch (vegSeason)
-        {
-            case SeasonManager.VegetationSeason.Spring:
-                // 春季不应有枯萎（春季复苏），降级为夏季枯萎
-                return currentStage switch
-                {
-                    GrowthStage.Small => summer.withered_Small,
-                    GrowthStage.Large => summer.withered_Large,
-                    _ => null
-                };
-                
-            case SeasonManager.VegetationSeason.Summer:
-                // 夏季：夏季枯萎外观
-                return currentStage switch
-                {
-                    GrowthStage.Small => summer.withered_Small,
-                    GrowthStage.Large => summer.withered_Large,
-                    _ => null
-                };
-                
-            case SeasonManager.VegetationSeason.EarlyFall:
-                // 早秋：枯萎植物也按比例渐变（使用固定随机值）
-                // ✅ 使用treeID生成固定随机值
-                int seed = treeID + (int)currentStage * 100;
-                Random.InitState(seed);
-                float treeSeedValue = Random.value;
-                
-                // ✅ 从SeasonManager获取过渡进度
-                float progress = SeasonManager.Instance.GetTransitionProgress();
-                
-                // 根据进度判断显示哪个季节的枯萎外观
-                if (treeSeedValue < progress)
-                {
-                    // 显示秋季枯萎外观
-                    return currentStage switch
-                    {
-                        GrowthStage.Small => fall_Early.withered_Small,
-                        GrowthStage.Large => fall_Early.withered_Large,
-                        _ => null
-                    };
-                }
-                else
-                {
-                    // 显示夏季枯萎外观
-                    return currentStage switch
-                    {
-                        GrowthStage.Small => summer.withered_Small,
-                        GrowthStage.Large => summer.withered_Large,
-                        _ => null
-                    };
-                }
-                
-            case SeasonManager.VegetationSeason.LateFall:
-                // 晚秋：秋季枯萎外观
-                return currentStage switch
-                {
-                    GrowthStage.Small => fall_Early.withered_Small,
-                    GrowthStage.Large => fall_Early.withered_Large,
-                    _ => null
-                };
-                
-            case SeasonManager.VegetationSeason.Winter:
-                // 冬季：秋季枯萎外观
-                return currentStage switch
-                {
-                    GrowthStage.Small => fall_Early.withered_Small,
-                    GrowthStage.Large => fall_Early.withered_Large,
-                    _ => null
-                };
-                
-            default:
-                return null;
-        }
-    }
-    
-    /// <summary>
-    /// 获取正常成长Sprite（基于渐变进度）
-    /// </summary>
-    private Sprite GetNormalSprite()
-    {
-        // ✅ 从SeasonManager获取当前植被季节
-        if (SeasonManager.Instance == null) return null;
-        SeasonManager.VegetationSeason vegSeason = SeasonManager.Instance.GetCurrentVegetationSeason();
-        
-        Sprite targetSprite = null;
-        
-        switch (vegSeason)
-        {
-            case SeasonManager.VegetationSeason.Spring:
-                // 100%春季
-                targetSprite = GetSeasonSprite(spring);
-                break;
-                
-            case SeasonManager.VegetationSeason.Summer:
-                // 渐变：春季 → 夏季（基于进度）
-                targetSprite = GetTransitionSprite(spring, summer);
-                break;
-                
-            case SeasonManager.VegetationSeason.EarlyFall:
-                // 渐变：夏季 → 早秋（基于进度）
-                targetSprite = GetTransitionSprite(summer, fall_Early);
-                break;
-                
-            case SeasonManager.VegetationSeason.LateFall:
-                // 100%晚秋
-                targetSprite = GetSeasonSprite(fall_Late);
-                break;
-                
-            case SeasonManager.VegetationSeason.Winter:
-                // 冬季不应走这里，降级为晚秋
-                targetSprite = GetSeasonSprite(fall_Late);
-                break;
-        }
-        
-        return targetSprite;
-    }
-    
-    /// <summary>
-    /// 获取单季节Sprite
-    /// </summary>
-    private Sprite GetSeasonSprite(SeasonGrowthData seasonData)
-    {
-        if (seasonData == null)
-        {
-            Debug.LogError($"<color=red>❌ [{transform.parent.name}/{gameObject.name}] GetSeasonSprite: seasonData为NULL！</color>\n" +
-                          $"当前Stage: {currentStage}, State: {currentState}\n" +
-                          $"这意味着对应季节的字段（spring/summer/fall等）为null！", gameObject);
-            return null;
-        }
-        
-        Sprite result = currentStage switch
-        {
-            GrowthStage.Sapling => seasonData.stage0_Sapling,
-            GrowthStage.Small => seasonData.stage1_Small,
-            GrowthStage.Large => seasonData.stage2_Large,
-            _ => null
-        };
-        
-        if (result == null)
-        {
-            Debug.LogError($"<color=red>❌ [{transform.parent.name}/{gameObject.name}] GetSeasonSprite: sprite为NULL！</color>\n" +
-                          $"seasonData存在但stage{(int)currentStage}的sprite为null\n" +
-                          $"当前Stage: {currentStage}\n" +
-                          $"stage0_Sapling: {(seasonData.stage0_Sapling != null ? "✓" : "✗")}\n" +
-                          $"stage1_Small: {(seasonData.stage1_Small != null ? "✓" : "✗")}\n" +
-                          $"stage2_Large: {(seasonData.stage2_Large != null ? "✓" : "✗")}", gameObject);
-        }
-        
-        return result;
-    }
-    
-    /// <summary>
-    /// 获取过渡季节Sprite（基于进度渐变选择）
-    /// </summary>
-    private Sprite GetTransitionSprite(SeasonGrowthData season1, SeasonGrowthData season2)
-    {
-        if (season1 == null || season2 == null) return GetSeasonSprite(season1);
-        
-        // ✅ 使用treeID + 阶段作为随机种子
-        int seed = treeID + (int)currentStage * 100;
-        Random.InitState(seed);
-        
-        // 生成一个固定的随机值（0-1），用于判断该树属于哪个季节外观
-        float treeSeedValue = Random.value;
-        
-        // ✅ 从SeasonManager获取过渡进度
-        if (SeasonManager.Instance == null) return GetSeasonSprite(season1);
-        float progress = SeasonManager.Instance.GetTransitionProgress();
-        
-        // 根据progress判断显示哪个季节
-        // 例如：progress=0.3时，30%的树显示season2，70%显示season1
-        if (treeSeedValue < progress)
-        {
-            // 显示season2（下一季节）
-            return GetSeasonSprite(season2);
-        }
-        else
-        {
-            // 显示season1（当前季节）
-            return GetSeasonSprite(season1);
-        }
-    }
-    
-    /// <summary>
-    /// 对齐Sprite底部到父物体中心（树根位置）
-    /// ✅ 同时更新Collider状态
-    /// </summary>
-    private void AlignSpriteBottom()
-    {
-        if (!alignSpriteBottom) return;
-        if (spriteRenderer == null || spriteRenderer.sprite == null) return;
-        
-        // ✅ 核心逻辑：让sprite底部对齐父物体中心（0,0,0）
-        Bounds spriteBounds = spriteRenderer.sprite.bounds;
-        float spriteBottomOffset = spriteBounds.min.y;
-        
-        Vector3 localPos = spriteRenderer.transform.localPosition;
-        localPos.y = -spriteBottomOffset;
-        spriteRenderer.transform.localPosition = localPos;
-        
-        // ✅ 更新Collider状态
-        UpdateColliderState();
-    }
-    
-    /// <summary>
-    /// 更新Collider状态
-    /// ✅ Sapling阶段：禁用Collider + 禁用OcclusionTransparency
-    /// ✅ Small/Large阶段：启用Collider + 启用OcclusionTransparency
-    /// ✅ Stump阶段：禁用OcclusionTransparency
-    /// </summary>
-    private void UpdateColliderState()
-    {
-        Collider2D[] colliders = GetComponents<Collider2D>();
-        if (colliders.Length == 0) return;
-        
-        bool hadEnabledCollider = false;
-        bool hasEnabledCollider = false;
-        
-        // 记录状态变化前的碰撞体状态
-        foreach (Collider2D collider in colliders)
-        {
-            if (collider.enabled) hadEnabledCollider = true;
-        }
-        
-        // ✅ 树苗阶段：禁用所有Collider + 禁用遮挡透明
-        if (currentStage == GrowthStage.Sapling)
-        {
-            foreach (Collider2D collider in colliders)
-            {
-                collider.enabled = false;
-            }
-            
-            // 禁用遮挡透明
-            if (occlusionTransparency != null)
-            {
-                occlusionTransparency.SetCanBeOccluded(false);
-            }
-        }
-        // ✅ 树桩阶段：启用Collider + 禁用遮挡透明
-        else if (currentState == TreeState.Stump)
-        {
-            foreach (Collider2D collider in colliders)
-            {
-                collider.enabled = true;
-                hasEnabledCollider = true;
-                
-                if (collider is PolygonCollider2D poly && spriteRenderer != null && spriteRenderer.sprite != null)
-                {
-                    UpdatePolygonColliderFromSprite(poly, spriteRenderer.sprite);
-                }
-            }
-            
-            // 禁用遮挡透明
-            if (occlusionTransparency != null)
-            {
-                occlusionTransparency.SetCanBeOccluded(false);
-            }
-        }
-        else
-        {
-            // ✅ Small/Large阶段：启用Collider + 启用遮挡透明
-            foreach (Collider2D collider in colliders)
-            {
-                collider.enabled = true;
-                hasEnabledCollider = true;
-                
-                // ✅ 如果是PolygonCollider2D，从当前Sprite的Custom Physics Shape更新形状
-                if (collider is PolygonCollider2D poly && spriteRenderer != null && spriteRenderer.sprite != null)
-                {
-                    UpdatePolygonColliderFromSprite(poly, spriteRenderer.sprite);
-                }
-            }
-            
-            // 启用遮挡透明
-            if (occlusionTransparency != null)
-            {
-                occlusionTransparency.SetCanBeOccluded(true);
-            }
-        }
-        
-        // ✅ 如果碰撞体状态改变（禁用→启用 或 启用→禁用），通知NavGrid2D刷新
-        if (hadEnabledCollider != hasEnabledCollider)
-        {
-            RequestNavGridRefresh();
-        }
-    }
-    
-    /// <summary>
-    /// 请求NavGrid2D刷新网格（延迟执行，避免重复刷新）
-    /// </summary>
-    private void RequestNavGridRefresh()
-    {
-        // 延迟0.2秒刷新，给碰撞体足够的时间更新
-        if (IsInvoking(nameof(TriggerNavGridRefresh)))
-        {
-            CancelInvoke(nameof(TriggerNavGridRefresh));
-        }
-        Invoke(nameof(TriggerNavGridRefresh), 0.2f);
-    }
-    
-    private void TriggerNavGridRefresh()
-    {
-        NavGrid2D.OnRequestGridRefresh?.Invoke();
+        Vector2 center = GetColliderCenter();
         
         if (showDebugInfo)
         {
-            Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 通知NavGrid2D刷新网格</color>");
+            Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 成长边距检测 v5：\n" +
+                      $"  - 当前阶段: {currentStageIndex} → {currentStageIndex + 1}\n" +
+                      $"  - Collider 中心: {center}\n" +
+                      $"  - 上下边距: {verticalMargin}, 左右边距: {horizontalMargin}</color>");
         }
+        
+        // 检测四个方向
+        if (HasObstacleInDirection(center, Vector2.up, verticalMargin))
+        {
+            if (showGrowthBlockedInfo && showDebugInfo)
+                Debug.Log($"<color=orange>[TreeController] {gameObject.name} 上方有障碍物，无法成长</color>");
+            return false;
+        }
+        
+        if (HasObstacleInDirection(center, Vector2.down, verticalMargin))
+        {
+            if (showGrowthBlockedInfo && showDebugInfo)
+                Debug.Log($"<color=orange>[TreeController] {gameObject.name} 下方有障碍物，无法成长</color>");
+            return false;
+        }
+        
+        if (HasObstacleInDirection(center, Vector2.left, horizontalMargin))
+        {
+            if (showGrowthBlockedInfo && showDebugInfo)
+                Debug.Log($"<color=orange>[TreeController] {gameObject.name} 左方有障碍物，无法成长</color>");
+            return false;
+        }
+        
+        if (HasObstacleInDirection(center, Vector2.right, horizontalMargin))
+        {
+            if (showGrowthBlockedInfo && showDebugInfo)
+                Debug.Log($"<color=orange>[TreeController] {gameObject.name} 右方有障碍物，无法成长</color>");
+            return false;
+        }
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=green>[TreeController] {gameObject.name} 四方向检测通过，可以成长</color>");
+        
+        return true;
     }
     
     /// <summary>
-    /// 从Sprite的Custom Physics Shape更新PolygonCollider2D
+    /// 检测指定方向上是否有障碍物
     /// </summary>
-    private void UpdatePolygonColliderFromSprite(PolygonCollider2D poly, Sprite sprite)
+    /// <param name="center">检测起点（Collider 中心）</param>
+    /// <param name="direction">检测方向</param>
+    /// <param name="distance">检测距离（边距）</param>
+    /// <returns>true 表示有障碍物</returns>
+    private bool HasObstacleInDirection(Vector2 center, Vector2 direction, float distance)
     {
-        if (poly == null || sprite == null) return;
+        if (growthObstacleTags == null || growthObstacleTags.Length == 0) return false;
         
-        // ✅ 获取Sprite的物理形状数量
-        int shapeCount = sprite.GetPhysicsShapeCount();
+        // 计算检测点（从中心向指定方向偏移）
+        Vector2 checkPoint = center + direction * distance;
         
-        if (shapeCount == 0)
+        // 使用小范围圆形检测
+        float checkRadius = 0.1f;
+        Collider2D[] hits = Physics2D.OverlapCircleAll(checkPoint, checkRadius);
+        
+        foreach (var hit in hits)
         {
-            // 如果Sprite没有Custom Physics Shape，使用默认形状（Sprite边界）
-            poly.pathCount = 0; // 清空现有路径
-            return;
+            // 跳过自己和子物体
+            if (hit.transform == transform) continue;
+            if (transform.parent != null && hit.transform == transform.parent) continue;
+            if (transform.parent != null && hit.transform.IsChildOf(transform.parent)) continue;
+            
+            // 检查标签（包括父级）
+            if (HasAnyTag(hit.transform, growthObstacleTags))
+            {
+                if (showDebugInfo)
+                {
+                    Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 在 {direction} 方向检测到障碍物: {hit.gameObject.name} (Tag: {hit.tag})</color>");
+                }
+                return true;
+            }
         }
         
-        // ✅ 设置path数量
-        poly.pathCount = shapeCount;
-        
-        // ✅ 为每个shape创建路径
-        List<Vector2> physicsShape = new List<Vector2>();
-        for (int i = 0; i < shapeCount; i++)
-        {
-            physicsShape.Clear();
-            sprite.GetPhysicsShape(i, physicsShape);
-            poly.SetPath(i, physicsShape);
-        }
-        
-        // ✅ 重置offset为(0,0)，让Collider完全跟随Sprite
-        poly.offset = Vector2.zero;
+        return false;
     }
     
     /// <summary>
-    /// 更新Shadow显示状态、缩放和位置
-    /// ✅ Shadow中心对齐父物体中心（树根位置）
+    /// 检查 Transform 或其父级是否有指定标签
     /// </summary>
-    private void UpdateShadowScale()
+    private bool HasAnyTag(Transform t, string[] tags)
     {
-        // Shadow和Tree是同级，都在父物体下
-        if (transform.parent == null) return;
-        
-        Transform shadowTransform = transform.parent.Find("Shadow");
-        if (shadowTransform == null) return;
-        
-        SpriteRenderer shadowRenderer = shadowTransform.GetComponent<SpriteRenderer>();
-        if (shadowRenderer == null) return;
-        
-        // ✅ 树苗和树桩无影子
-        if (currentStage == GrowthStage.Sapling || currentState == TreeState.Stump)
+        Transform current = t;
+        while (current != null)
         {
-            shadowRenderer.enabled = false;
-            return;
+            foreach (var tag in tags)
+            {
+                if (current.CompareTag(tag))
+                    return true;
+            }
+            current = current.parent;
+        }
+        return false;
+    }
+    
+    /// <summary>
+    /// 获取 Collider 中心点
+    /// </summary>
+    private Vector2 GetColliderCenter()
+    {
+        // 尝试获取 Collider2D
+        Collider2D col = GetComponent<Collider2D>();
+        if (col != null && col.enabled)
+        {
+            return col.bounds.center;
         }
         
-        // ✅ 小树和大树启用并设置缩放
-        shadowRenderer.enabled = true;
-        
-        float targetScale = currentStage switch
+        // 如果没有 Collider，使用父物体位置（树根位置）
+        if (transform.parent != null)
         {
-            GrowthStage.Small => shadowScaleStage1,
-            GrowthStage.Large => shadowScaleStage2,
-            _ => shadowScaleStage2
-        };
-        
-        shadowTransform.localScale = new Vector3(targetScale, targetScale, 1f);
-        
-        // ✅ Shadow中心对齐父物体中心（树根）
-        // 如果Shadow sprite的pivot在中心（通常情况），直接设置为0即可
-        // 如果pivot不在中心，需要根据bounds.center计算偏移
-        if (shadowRenderer.sprite != null)
-        {
-            Bounds shadowBounds = shadowRenderer.sprite.bounds;
-            
-            // Shadow几何中心相对于pivot的偏移
-            float centerOffset = shadowBounds.center.y;
-            
-            // 让Shadow几何中心对齐父物体中心
-            Vector3 shadowPos = shadowTransform.localPosition;
-            shadowPos.y = -centerOffset;
-            shadowTransform.localPosition = shadowPos;
+            return transform.parent.position;
         }
+        
+        return transform.position;
     }
     
     /// <summary>
     /// 成长到下一阶段
     /// </summary>
-    public void Grow()
+    public void GrowToNextStage()
     {
-        if (currentStage == GrowthStage.Sapling)
-        {
-            currentStage = GrowthStage.Small;
-        }
-        else if (currentStage == GrowthStage.Small)
-        {
-            currentStage = GrowthStage.Large;
-        }
+        if (currentStageIndex >= STAGE_MAX) return;
         
+        currentStageIndex++;
+        daysInCurrentStage = 0;
+        
+        // 重新初始化血量
+        InitializeHealth();
+        
+        // 更新显示
         UpdateSprite();
+        
+        // ★ 阶段变化时更新碰撞体形状
+        UpdatePolygonColliderShape();
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=lime>[TreeController] {gameObject.name} 成长到阶段 {currentStageIndex}！</color>");
     }
     
     /// <summary>
-    /// 设置枯萎状态
+    /// 更新 PolygonCollider2D 形状（仅在阶段变化时调用）
     /// </summary>
-    public void SetWithered(bool withered)
+    private void UpdatePolygonColliderShape()
     {
-        if (withered)
+        if (spriteRenderer == null || spriteRenderer.sprite == null) return;
+        
+        Collider2D[] colliders = GetComponents<Collider2D>();
+        foreach (Collider2D collider in colliders)
         {
-            currentState = TreeState.Withered;
-        }
-        else if (currentState == TreeState.Withered)
-        {
-            currentState = TreeState.Normal;
+            if (collider is PolygonCollider2D poly)
+            {
+                UpdatePolygonColliderFromSprite(poly, spriteRenderer.sprite);
+            }
         }
         
+        // 🔥 关键修复：碰撞体形状变化后，通知 NavGrid 刷新
+        // 树木成长时碰撞体变大，需要更新导航网格的阻挡区域
+        RequestNavGridRefresh();
+    }
+    
+    /// <summary>
+    /// 设置阶段（用于调试或初始化）
+    /// </summary>
+    public void SetStage(int stageIndex)
+    {
+        currentStageIndex = Mathf.Clamp(stageIndex, 0, STAGE_MAX);
+        daysInCurrentStage = 0;
+        InitializeHealth();
         UpdateSprite();
     }
+    #endregion
     
     #region IResourceNode 接口实现
-    
-    /// <summary>
-    /// 资源类型标识
-    /// </summary>
     public string ResourceTag => "Tree";
     
     /// <summary>
     /// 资源是否已耗尽
+    /// ★ 修复：树桩状态不算耗尽，树桩可以继续被砍
+    /// 只有当树木被完全销毁时才算耗尽（但此时对象已不存在）
     /// </summary>
-    public bool IsDepleted => currentState == TreeState.Stump || currentStage == GrowthStage.Sapling;
+    public bool IsDepleted => false;
     
     /// <summary>
-    /// 获取斧头材料等级
-    /// </summary>
-    private int GetAxeTier(ToolHitContext ctx)
-    {
-        if (ctx.attacker != null)
-        {
-            var toolController = ctx.attacker.GetComponent<PlayerToolController>();
-            if (toolController != null && toolController.CurrentToolData != null)
-            {
-                var toolData = toolController.CurrentToolData as ToolData;
-                if (toolData != null)
-                {
-                    return toolData.GetMaterialTierValue();
-                }
-            }
-        }
-        return 0; // 默认木质
-    }
-    
-    /// <summary>
-    /// 获取当前树木的阶段值（用于等级判定）
-    /// GrowthStage 枚举转换为 0-5 的整数
-    /// </summary>
-    private int GetTreeStageValue()
-    {
-        // GrowthStage: Sapling=0, Small=1, Large=2
-        // 但我们需要支持 0-5 的阶段系统
-        // 这里直接使用枚举的整数值
-        return (int)currentStage;
-    }
-    
-    /// <summary>
-    /// 检查是否接受此工具类型（用于判断是否扣血）
+    /// 检查是否接受此工具类型
     /// </summary>
     public bool CanAccept(ToolHitContext ctx)
     {
-        // 只有斧头能对树木造成伤害
-        if (ctx.toolType != ToolType.Axe) return false;
-        
-        // 树桩不能再砍
-        if (currentState == TreeState.Stump) return false;
-        
-        // 树苗不能砍
-        if (currentStage == GrowthStage.Sapling) return false;
-        
-        // ★ 检查斧头等级是否足够
-        int axeTier = GetAxeTier(ctx);
-        int treeStage = GetTreeStageValue();
-        if (!FarmGame.Utils.MaterialTierHelper.CanChopTree(axeTier, treeStage))
+        // ★ 修复：树桩状态下，只接受斧头
+        if (currentState == TreeState.Stump)
         {
-            return false;
+            return ctx.toolType == ToolType.Axe;
         }
         
-        return true;
+        var config = CurrentStageConfig;
+        if (config == null) return false;
+        
+        // 检查工具类型是否匹配
+        return ctx.toolType == config.acceptedToolType;
     }
     
     /// <summary>
@@ -1177,138 +776,52 @@ public class TreeController : MonoBehaviour, IResourceNode
     /// </summary>
     public void OnHit(ToolHitContext ctx)
     {
-        // 树桩和树苗不响应
-        if (currentState == TreeState.Stump) return;
-        if (currentStage == GrowthStage.Sapling) return;
-        
-        // ✅ 记录玩家朝向（用于倒下动画）
-        // 从 ToolHitContext 的 attacker 获取玩家的 Animator
-        if (ctx.attacker != null)
+        // 树桩状态：检查是否可以继续砍树桩
+        if (currentState == TreeState.Stump)
         {
-            var playerAnimator = ctx.attacker.GetComponentInChildren<Animator>();
-            if (playerAnimator != null)
-            {
-                lastHitPlayerDirection = playerAnimator.GetInteger("Direction");
-            }
-            var playerSprite = ctx.attacker.GetComponentInChildren<SpriteRenderer>();
-            if (playerSprite != null)
-            {
-                lastHitPlayerFlipX = playerSprite.flipX;
-            }
+            HandleStumpHit(ctx);
+            return;
         }
         
-        // 判断是否是正确的工具（斧头）
-        bool isCorrectTool = CanAccept(ctx);
+        // 记录玩家朝向（用于倒下动画）
+        RecordPlayerDirection(ctx);
         
-        // ✅ 计算被砍方向（从玩家朝向推断）
-        // 玩家在右边砍 → 树被从右边砍 → 应该向左倒
-        Vector2 chopDirection = -ctx.hitDir; // 反向就是被砍的方向
+        // 计算被砍方向
+        Vector2 chopDirection = -ctx.hitDir;
+        
+        // 检查工具类型
+        var config = CurrentStageConfig;
+        if (config == null) return;
+        
+        bool isCorrectTool = ctx.toolType == config.acceptedToolType;
         
         if (isCorrectTool)
         {
-            // ✅ 消耗精力（只有斧头砍树才消耗精力）
-            float energyCost = 2f; // 默认消耗2点精力
-            
-            // 从 ToolData 获取精力消耗（如果有的话）
-            if (ctx.attacker != null)
+            // 阶段0（树苗）：锄头挖出
+            if (currentStageIndex == STAGE_SAPLING)
             {
-                var toolController = ctx.attacker.GetComponent<PlayerToolController>();
-                if (toolController != null && toolController.CurrentToolData != null)
-                {
-                    var toolData = toolController.CurrentToolData as ToolData;
-                    if (toolData != null)
-                    {
-                        energyCost = toolData.energyCost;
-                    }
-                }
-            }
-            
-            // 尝试消耗精力
-            bool hasEnergy = true;
-            if (EnergySystem.Instance != null)
-            {
-                hasEnergy = EnergySystem.Instance.TryConsumeEnergy(Mathf.RoundToInt(energyCost));
-            }
-            
-            if (!hasEnergy)
-            {
-                // 精力不足，只播放抖动效果，不扣血
-                PlayHitEffect(chopDirection);
-                
-                if (showDebugInfo)
-                {
-                    Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 精力不足，无法砍伐</color>");
-                }
+                HandleSaplingDigOut(ctx);
                 return;
             }
             
-            // ✅ 设置砍伐状态（透明度加深，更不透明）
-            if (occlusionTransparency != null)
-            {
-                occlusionTransparency.SetChoppingState(true, 0.25f);
-            }
-            
-            // 斧头：扣血 + 抖动 + 树叶 + 音效
-            int damage = Mathf.Max(1, Mathf.RoundToInt(ctx.baseDamage));
-            bool felled = TakeDamage(damage);
-            
-            if (!felled)
-            {
-                PlayHitEffect(chopDirection);
-                SpawnLeafParticles();
-                PlayChopHitSound();
-            }
-            
-            if (showDebugInfo)
-            {
-                Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 受到 {damage} 点伤害，剩余 {currentChopCount} 次，消耗精力 {energyCost}</color>");
-            }
+            // 阶段1-5：斧头砍伐
+            HandleAxeChop(ctx, chopDirection);
         }
         else
         {
-            // 检查是否是斧头但等级不足
-            if (ctx.toolType == ToolType.Axe)
-            {
-                int axeTier = GetAxeTier(ctx);
-                int treeStage = GetTreeStageValue();
-                int requiredTier = FarmGame.Utils.MaterialTierHelper.GetRequiredAxeTier(treeStage);
-                
-                // 斧头等级不足：播放抖动 + 提示
-                PlayHitEffect(chopDirection);
-                
-                if (showDebugInfo)
-                {
-                    string axeName = FarmGame.Utils.MaterialTierHelper.GetTierName(axeTier);
-                    string requiredName = FarmGame.Utils.MaterialTierHelper.GetTierName(requiredTier);
-                    Debug.Log($"<color=orange>[TreeController] {gameObject.name} 斧头等级不足！当前: {axeName}({axeTier}), 需要: {requiredName}({requiredTier})</color>");
-                }
-                
-                // TODO: 可以在这里播放"叮"的音效或显示 UI 提示
-            }
-            else
-            {
-                // 其他工具：只抖动，不扣血
-                PlayHitEffect(chopDirection);
-                
-                if (showDebugInfo)
-                {
-                    Debug.Log($"<color=gray>[TreeController] {gameObject.name} 被非斧头工具击中，只抖动</color>");
-                }
-            }
+            // 错误工具：只抖动
+            PlayHitEffect(chopDirection);
+            if (showDebugInfo)
+                Debug.Log($"<color=gray>[TreeController] {gameObject.name} 被错误工具击中，只抖动</color>");
         }
     }
     
-    /// <summary>
-    /// 获取检测边界（Sprite Bounds）
-    /// </summary>
     public Bounds GetBounds()
     {
         if (spriteRenderer != null && spriteRenderer.sprite != null)
         {
             return spriteRenderer.bounds;
         }
-        
-        // 返回一个默认的小边界
         return new Bounds(GetPosition(), Vector3.one * 0.5f);
     }
     
@@ -1339,14 +852,928 @@ public class TreeController : MonoBehaviour, IResourceNode
         return GetBounds();
     }
     
-    /// <summary>
-    /// 获取资源节点位置（树根位置）
-    /// </summary>
     public Vector3 GetPosition()
     {
         return transform.parent != null ? transform.parent.position : transform.position;
     }
+    #endregion
     
+    #region 工具交互处理
+    /// <summary>
+    /// 记录玩家朝向
+    /// </summary>
+    private void RecordPlayerDirection(ToolHitContext ctx)
+    {
+        if (ctx.attacker != null)
+        {
+            var playerAnimator = ctx.attacker.GetComponentInChildren<Animator>();
+            if (playerAnimator != null)
+            {
+                lastHitPlayerDirection = playerAnimator.GetInteger("Direction");
+            }
+            var playerSprite = ctx.attacker.GetComponentInChildren<SpriteRenderer>();
+            if (playerSprite != null)
+            {
+                lastHitPlayerFlipX = playerSprite.flipX;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// 处理树苗挖出（阶段0，锄头）
+    /// </summary>
+    private void HandleSaplingDigOut(ToolHitContext ctx)
+    {
+        // 尝试消耗精力
+        float energyCost = GetEnergyCost(ctx);
+        if (!TryConsumeEnergy(energyCost))
+        {
+            if (showDebugInfo)
+                Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 精力不足，无法挖出树苗</color>");
+            return;
+        }
+        
+        // 播放挖出音效
+        PlayDigOutSound();
+        
+        // 生成掉落物
+        SpawnDrops();
+        
+        // 销毁树苗
+        DestroyTree();
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=orange>[TreeController] {gameObject.name} 树苗被挖出！</color>");
+    }
+    
+    /// <summary>
+    /// 处理斧头砍伐（阶段1-5）
+    /// </summary>
+    private void HandleAxeChop(ToolHitContext ctx, Vector2 chopDirection)
+    {
+        // ★ 先尝试消耗精力（无论等级是否足够，只要挥动斧头就消耗精力）
+        float energyCost = GetEnergyCost(ctx);
+        bool hasEnergy = TryConsumeEnergy(energyCost);
+        
+        if (!hasEnergy)
+        {
+            PlayHitEffect(chopDirection);
+            if (showDebugInfo)
+                Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 精力不足，无法砍伐</color>");
+            return;
+        }
+        
+        // ★ 检查斧头材料等级（精力已消耗，但等级不足则不造成伤害）
+        int axeTier = GetAxeTier(ctx);
+        if (!MaterialTierHelper.CanChopTree(axeTier, currentStageIndex))
+        {
+            // 等级不足：播放金属碰撞音效和提示（精力已消耗，但不造成伤害）
+            PlayTierInsufficientFeedback(axeTier);
+            PlayHitEffect(chopDirection);
+            if (showDebugInfo)
+                Debug.Log($"<color=red>[TreeController] {gameObject.name} 斧头等级不足！需要 {MaterialTierHelper.GetTierName(MaterialTierHelper.GetRequiredAxeTier(currentStageIndex))} 斧头，当前 {MaterialTierHelper.GetTierName(axeTier)} 斧头（精力已消耗）</color>");
+            return;
+        }
+        
+        // ✅ 设置砍伐状态（通过 OcclusionManager 确保单一高亮）
+        if (occlusionTransparency != null)
+        {
+            if (OcclusionManager.Instance != null)
+            {
+                OcclusionManager.Instance.SetChoppingTree(occlusionTransparency, 0.5f);
+            }
+            else
+            {
+                occlusionTransparency.SetChoppingState(true, 0.25f);
+            }
+        }
+        
+        // ★ 计算伤害（使用 ctx.baseDamage）
+        int damage = Mathf.Max(1, Mathf.RoundToInt(ctx.baseDamage));
+        
+        // ★ 调试输出
+        if (showDebugInfo)
+        {
+            Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 砍伐信息：\n" +
+                      $"  - 斧头等级：{MaterialTierHelper.GetTierName(axeTier)}\n" +
+                      $"  - 基础伤害：{ctx.baseDamage}\n" +
+                      $"  - 实际伤害：{damage}\n" +
+                      $"  - 精力消耗：{energyCost}\n" +
+                      $"  - 当前血量：{currentHealth}/{CurrentStageConfig.health}</color>");
+        }
+        
+        // 扣血
+        currentHealth -= damage;
+        
+        if (currentHealth <= 0)
+        {
+            // 砍倒
+            ChopDown();
+        }
+        else
+        {
+            // 未砍倒：播放效果
+            PlayHitEffect(chopDirection);
+            SpawnLeafParticles();
+            PlayChopHitSound();
+        }
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 受到 {damage} 点伤害，剩余血量 {currentHealth}</color>");
+    }
+    
+    /// <summary>
+    /// 处理树桩命中
+    /// </summary>
+    private void HandleStumpHit(ToolHitContext ctx)
+    {
+        // 只有斧头能砍树桩
+        if (ctx.toolType != ToolType.Axe)
+        {
+            if (showDebugInfo)
+                Debug.Log($"<color=gray>[TreeController] {gameObject.name} 树桩只能用斧头砍</color>");
+            return;
+        }
+        
+        var config = CurrentStageConfig;
+        if (config == null || !config.hasStump)
+        {
+            if (showDebugInfo)
+                Debug.LogWarning($"[TreeController] {gameObject.name} 当前阶段没有树桩配置");
+            return;
+        }
+        
+        // 尝试消耗精力
+        float energyCost = GetEnergyCost(ctx);
+        if (!TryConsumeEnergy(energyCost))
+        {
+            if (showDebugInfo)
+                Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 精力不足，无法砍树桩</color>");
+            return;
+        }
+        
+        // 计算伤害
+        int damage = Mathf.Max(1, Mathf.RoundToInt(ctx.baseDamage));
+        
+        // ★ 调试输出
+        if (showDebugInfo)
+        {
+            Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 树桩砍伐信息：\n" +
+                      $"  - 基础伤害：{ctx.baseDamage}\n" +
+                      $"  - 实际伤害：{damage}\n" +
+                      $"  - 精力消耗：{energyCost}\n" +
+                      $"  - 当前树桩血量：{currentStumpHealth}/{config.stumpHealth}</color>");
+        }
+        
+        // 扣树桩血量
+        currentStumpHealth -= damage;
+        
+        // 播放效果
+        PlayChopHitSound();
+        
+        if (currentStumpHealth <= 0)
+        {
+            // 树桩被砍完
+            SpawnStumpDrops();
+            DestroyTree();
+            
+            if (showDebugInfo)
+                Debug.Log($"<color=orange>[TreeController] {gameObject.name} 树桩被砍完！</color>");
+        }
+        else
+        {
+            if (showDebugInfo)
+                Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 树桩受到 {damage} 点伤害，剩余 {currentStumpHealth}</color>");
+        }
+    }
+    
+    /// <summary>
+    /// 获取斧头材料等级
+    /// </summary>
+    private int GetAxeTier(ToolHitContext ctx)
+    {
+        if (ctx.attacker != null)
+        {
+            var toolController = ctx.attacker.GetComponent<PlayerToolController>();
+            if (toolController != null && toolController.CurrentToolData != null)
+            {
+                var toolData = toolController.CurrentToolData as ToolData;
+                if (toolData != null)
+                {
+                    return toolData.GetMaterialTierValue();
+                }
+            }
+        }
+        return 0; // 默认木质
+    }
+    
+    /// <summary>
+    /// 获取精力消耗
+    /// </summary>
+    private float GetEnergyCost(ToolHitContext ctx)
+    {
+        float energyCost = 2f; // 默认
+        
+        if (ctx.attacker != null)
+        {
+            var toolController = ctx.attacker.GetComponent<PlayerToolController>();
+            if (toolController != null && toolController.CurrentToolData != null)
+            {
+                var toolData = toolController.CurrentToolData as ToolData;
+                if (toolData != null)
+                {
+                    energyCost = toolData.energyCost;
+                }
+            }
+        }
+        
+        return energyCost;
+    }
+    
+    /// <summary>
+    /// 尝试消耗精力
+    /// </summary>
+    private bool TryConsumeEnergy(float energyCost)
+    {
+        if (EnergySystem.Instance != null)
+        {
+            return EnergySystem.Instance.TryConsumeEnergy(Mathf.RoundToInt(energyCost));
+        }
+        return true; // 如果没有精力系统，默认允许
+    }
+    #endregion
+    
+    #region 砍伐系统
+    /// <summary>
+    /// 砍倒树木
+    /// </summary>
+    public void ChopDown()
+    {
+        // ✅ 重置砍伐状态（通过 OcclusionManager 清除高亮）
+        if (OcclusionManager.Instance != null)
+        {
+            OcclusionManager.Instance.ClearChoppingHighlight();
+        }
+        else if (occlusionTransparency != null)
+        {
+            occlusionTransparency.SetChoppingState(false);
+        }
+        
+        // 播放砍倒音效
+        PlayChopFellSound();
+        
+        // 生成掉落物
+        SpawnDrops();
+        
+        // 获取砍树经验
+        GrantWoodcuttingExperience();
+        
+        // 检查是否有树桩
+        var config = CurrentStageConfig;
+        bool hasStump = config != null && config.hasStump;
+        
+        if (hasStump)
+        {
+            // 启动倒下动画或直接转换为树桩
+            if (enableFallAnimation)
+            {
+                StartCoroutine(FallAnimationCoroutine(lastHitPlayerDirection, lastHitPlayerFlipX));
+            }
+            else
+            {
+                FinishChopDown();
+            }
+        }
+        else
+        {
+            // 没有树桩，直接销毁
+            if (enableFallAnimation)
+            {
+                StartCoroutine(FallAndDestroyCoroutine(lastHitPlayerDirection, lastHitPlayerFlipX));
+            }
+            else
+            {
+                DestroyTree();
+            }
+        }
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=orange>[TreeController] {gameObject.name} 被砍倒！hasStump={hasStump}</color>");
+    }
+    
+    /// <summary>
+    /// 完成砍倒（转换为树桩）
+    /// </summary>
+    private void FinishChopDown()
+    {
+        currentState = TreeState.Stump;
+        
+        // 初始化树桩血量
+        var config = CurrentStageConfig;
+        if (config != null)
+        {
+            currentStumpHealth = config.stumpHealth;
+        }
+        
+        UpdateSprite();
+        
+        // ★ 树桩状态需要更新碰撞体形状（从树干变为树桩）
+        UpdatePolygonColliderShape();
+    }
+    
+    /// <summary>
+    /// 销毁树木
+    /// </summary>
+    private void DestroyTree()
+    {
+        // 从注册表注销
+        if (ResourceNodeRegistry.Instance != null)
+        {
+            ResourceNodeRegistry.Instance.Unregister(gameObject.GetInstanceID());
+        }
+        
+        // 销毁父物体（整棵树）
+        if (transform.parent != null)
+        {
+            Destroy(transform.parent.gameObject);
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+    #endregion
+
+    
+    #region 掉落系统
+    /// <summary>
+    /// 生成掉落物（砍倒树干时）
+    /// </summary>
+    private void SpawnDrops()
+    {
+        // 使用新的简化配置
+        if (dropItemData == null)
+        {
+            if (showDebugInfo)
+                Debug.LogWarning($"[TreeController] {gameObject.name} 未配置掉落物品 SO");
+            return;
+        }
+        
+        // 获取当前阶段的掉落数量
+        int dropAmount = 0;
+        if (stageDropAmounts != null && currentStageIndex < stageDropAmounts.Length)
+        {
+            dropAmount = stageDropAmounts[currentStageIndex];
+        }
+        
+        if (dropAmount <= 0) return;
+        
+        Vector3 dropOrigin = GetPosition();
+        
+        if (WorldSpawnService.Instance != null)
+        {
+            WorldSpawnService.Instance.SpawnMultiple(
+                dropItemData,
+                0, // 品质默认为0
+                dropAmount,
+                dropOrigin,
+                dropSpreadRadius
+            );
+        }
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 阶段{currentStageIndex} 掉落 {dropAmount} 个 {dropItemData.itemName}</color>");
+    }
+    
+    /// <summary>
+    /// 生成树桩掉落物
+    /// </summary>
+    private void SpawnStumpDrops()
+    {
+        // 使用新的简化配置
+        if (dropItemData == null) return;
+        
+        // 获取当前阶段的树桩掉落数量
+        int dropAmount = 0;
+        if (stumpDropAmounts != null && currentStageIndex < stumpDropAmounts.Length)
+        {
+            dropAmount = stumpDropAmounts[currentStageIndex];
+        }
+        
+        if (dropAmount <= 0) return;
+        
+        Vector3 dropOrigin = GetPosition();
+        
+        if (WorldSpawnService.Instance != null)
+        {
+            WorldSpawnService.Instance.SpawnMultiple(
+                dropItemData,
+                0, // 品质默认为0
+                dropAmount,
+                dropOrigin,
+                dropSpreadRadius
+            );
+        }
+        
+        if (showDebugInfo)
+            Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 树桩掉落 {dropAmount} 个 {dropItemData.itemName}</color>");
+    }
+    #endregion
+    
+    #region 经验系统
+    /// <summary>
+    /// 获取当前阶段的砍伐经验
+    /// </summary>
+    public int GetChopExperience()
+    {
+        if (stageExperience == null || currentStageIndex >= stageExperience.Length)
+        {
+            return 0;
+        }
+        return stageExperience[currentStageIndex];
+    }
+    
+    /// <summary>
+    /// 给予砍树经验
+    /// </summary>
+    private void GrantWoodcuttingExperience()
+    {
+        int xp = GetChopExperience();
+        if (xp <= 0) return;
+        
+        if (FarmGame.Data.SkillLevelService.Instance != null)
+        {
+            FarmGame.Data.SkillLevelService.Instance.AddExperience(FarmGame.Data.SkillType.Gathering, xp);
+            
+            if (showDebugInfo)
+            {
+                Debug.Log($"<color=lime>[TreeController] {gameObject.name} 阶段{currentStageIndex} 砍伐获得 {xp} 点采集经验</color>");
+            }
+        }
+        else
+        {
+            if (showDebugInfo)
+            {
+                Debug.LogWarning($"[TreeController] SkillLevelService 未初始化，无法给予经验");
+            }
+        }
+    }
+    #endregion
+    
+    #region Sprite显示系统
+    /// <summary>
+    /// 更新Sprite显示
+    /// ★ 注意：Stage 0（树苗）在冬季直接死亡，不会调用此方法
+    /// </summary>
+    public void UpdateSprite()
+    {
+        if (spriteRenderer == null) return;
+        
+        Sprite targetSprite = GetCurrentSprite();
+        
+        if (targetSprite != null)
+        {
+            spriteRenderer.sprite = targetSprite;
+            spriteRenderer.enabled = true;
+            
+            if (alignSpriteBottom)
+            {
+                AlignSpriteBottom();
+            }
+            UpdateShadowScale();
+            UpdateColliderState();
+        }
+        else
+        {
+            // 无有效 Sprite 时隐藏
+            spriteRenderer.enabled = false;
+            UpdateShadowScale();
+        }
+    }
+    
+    /// <summary>
+    /// 获取当前应该显示的Sprite
+    /// </summary>
+    private Sprite GetCurrentSprite()
+    {
+        if (SeasonManager.Instance == null) return null;
+        if (spriteConfig == null) return null;
+        
+        var stageData = CurrentSpriteData;
+        if (stageData == null) return null;
+        
+        var vegSeason = SeasonManager.Instance.GetCurrentVegetationSeason();
+        
+        // 树桩状态
+        if (currentState == TreeState.Stump)
+        {
+            return stageData.GetStumpSprite(vegSeason);
+        }
+        
+        // 冬季特殊处理
+        if (vegSeason == SeasonManager.VegetationSeason.Winter)
+        {
+            return GetWinterSprite(stageData, vegSeason);
+        }
+        
+        // 枯萎状态
+        if (currentState == TreeState.Withered)
+        {
+            return stageData.GetWitheredSprite(vegSeason);
+        }
+        
+        // 正常状态
+        return GetNormalSprite(stageData, vegSeason);
+    }
+    
+    /// <summary>
+    /// 获取冬季Sprite
+    /// ★ 注意：Stage 0（树苗）在冬季直接死亡，不会调用此方法
+    /// </summary>
+    private Sprite GetWinterSprite(StageSpriteData stageData, SeasonManager.VegetationSeason vegSeason)
+    {
+        // 冰封状态（挂冰）
+        if (currentState == TreeState.Frozen || currentState == TreeState.Normal)
+        {
+            return stageData.normal.GetSprite(vegSeason);
+        }
+        
+        // 融化状态 - 降级到枯萎外观
+        if (currentState == TreeState.Melted)
+        {
+            return stageData.GetWitheredSprite(vegSeason);
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
+    /// 获取正常状态Sprite（支持季节渐变）
+    /// </summary>
+    private Sprite GetNormalSprite(StageSpriteData stageData, SeasonManager.VegetationSeason vegSeason)
+    {
+        // 使用 SeasonSpriteSet 获取对应季节的 Sprite
+        if (stageData.normal == null) return null;
+        
+        // 检查是否需要渐变
+        float progress = SeasonManager.Instance.GetTransitionProgress();
+        
+        // ★ 调试输出：季节 Sprite 选择逻辑
+        if (showDebugInfo)
+        {
+            int dayInSeason = TimeManager.Instance != null ? TimeManager.Instance.GetDay() : -1;
+            var calendarSeason = SeasonManager.Instance.GetCurrentSeason();
+            Debug.Log($"<color=magenta>[TreeController] {gameObject.name} 季节Sprite选择：\n" +
+                      $"  - 日历季节: {calendarSeason}\n" +
+                      $"  - 季节天数: {dayInSeason}\n" +
+                      $"  - 植被季节: {vegSeason}\n" +
+                      $"  - 渐变进度: {progress:F3}\n" +
+                      $"  - spring配置: {(stageData.normal.spring != null ? stageData.normal.spring.name : "NULL")}\n" +
+                      $"  - summer配置: {(stageData.normal.summer != null ? stageData.normal.summer.name : "NULL")}</color>");
+        }
+        
+        // ★ 渐变逻辑说明：
+        // - progress = 0：无渐变，100% 显示当前季节
+        // - progress = 0.5：50% 树木显示下一季节
+        // - progress = 1.0：渐变完成，100% 显示下一季节
+        // - 渐变是不可逆的：一旦 treeSeedValue < progress，该树就显示下一季节
+        
+        // 如果进度为0，直接返回当前季节的Sprite（无渐变）
+        if (progress <= 0f)
+        {
+            Sprite result = stageData.normal.GetSprite(vegSeason);
+            if (showDebugInfo)
+            {
+                Debug.Log($"<color=lime>[TreeController] {gameObject.name} 无渐变(progress=0)，显示当前季节 {vegSeason}: {(result != null ? result.name : "NULL")}</color>");
+            }
+            return result;
+        }
+        
+        // 如果进度为1，渐变完成，返回下一季节的Sprite
+        if (progress >= 1f)
+        {
+            var nextSeason = GetNextVegetationSeason(vegSeason);
+            Sprite result = stageData.normal.GetSprite(nextSeason);
+            if (showDebugInfo)
+            {
+                Debug.Log($"<color=lime>[TreeController] {gameObject.name} 渐变完成(progress=1)，显示下一季节 {nextSeason}: {(result != null ? result.name : "NULL")}</color>");
+            }
+            return result;
+        }
+        
+        // 渐变中：使用treeID生成固定随机值
+        // ★ 每棵树有固定的随机种子，保证同一棵树在同一进度下始终显示相同季节
+        int seed = treeID + currentStageIndex * 100;
+        Random.InitState(seed);
+        float treeSeedValue = Random.value;
+        
+        // 根据进度判断显示哪个季节
+        // ★ 渐变不可逆：一旦 treeSeedValue < progress，该树就显示下一季节
+        if (treeSeedValue < progress)
+        {
+            // 显示下一季节
+            var nextSeason = GetNextVegetationSeason(vegSeason);
+            Sprite result = stageData.normal.GetSprite(nextSeason);
+            if (showDebugInfo)
+            {
+                Debug.Log($"<color=yellow>[TreeController] {gameObject.name} 渐变中，treeSeed={treeSeedValue:F3} < progress={progress:F3}，显示下一季节 {nextSeason}: {(result != null ? result.name : "NULL")}</color>");
+            }
+            return result;
+        }
+        else
+        {
+            // 显示当前季节
+            Sprite result = stageData.normal.GetSprite(vegSeason);
+            if (showDebugInfo)
+            {
+                Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 渐变中，treeSeed={treeSeedValue:F3} >= progress={progress:F3}，显示当前季节 {vegSeason}: {(result != null ? result.name : "NULL")}</color>");
+            }
+            return result;
+        }
+    }
+    
+    /// <summary>
+    /// 获取下一个植被季节
+    /// </summary>
+    private SeasonManager.VegetationSeason GetNextVegetationSeason(SeasonManager.VegetationSeason current)
+    {
+        return current switch
+        {
+            SeasonManager.VegetationSeason.Spring => SeasonManager.VegetationSeason.Summer,
+            SeasonManager.VegetationSeason.Summer => SeasonManager.VegetationSeason.EarlyFall,
+            SeasonManager.VegetationSeason.EarlyFall => SeasonManager.VegetationSeason.LateFall,
+            SeasonManager.VegetationSeason.LateFall => SeasonManager.VegetationSeason.Winter,
+            SeasonManager.VegetationSeason.Winter => SeasonManager.VegetationSeason.Spring,
+            _ => current
+        };
+    }
+    #endregion
+    
+    #region Sprite对齐与碰撞体
+    /// <summary>
+    /// 对齐Sprite底部到父物体中心
+    /// </summary>
+    private void AlignSpriteBottom()
+    {
+        if (!alignSpriteBottom) return;
+        if (spriteRenderer == null || spriteRenderer.sprite == null) return;
+        
+        Bounds spriteBounds = spriteRenderer.sprite.bounds;
+        float spriteBottomOffset = spriteBounds.min.y;
+        
+        Vector3 localPos = spriteRenderer.transform.localPosition;
+        localPos.y = -spriteBottomOffset;
+        spriteRenderer.transform.localPosition = localPos;
+    }
+    
+    /// <summary>
+    /// 更新碰撞体状态
+    /// </summary>
+    private void UpdateColliderState()
+    {
+        var config = CurrentStageConfig;
+        if (config == null) return;
+        
+        Collider2D[] colliders = GetComponents<Collider2D>();
+        if (colliders.Length == 0) return;
+        
+        bool hadEnabledCollider = false;
+        bool hasEnabledCollider = false;
+        
+        foreach (Collider2D collider in colliders)
+        {
+            if (collider.enabled) hadEnabledCollider = true;
+        }
+        
+        // 根据配置设置碰撞体状态
+        bool shouldEnableCollider = config.enableCollider;
+        
+        // 树桩状态：保持碰撞体
+        if (currentState == TreeState.Stump)
+        {
+            shouldEnableCollider = true;
+        }
+        
+        foreach (Collider2D collider in colliders)
+        {
+            collider.enabled = shouldEnableCollider;
+            if (shouldEnableCollider) hasEnabledCollider = true;
+            
+            // ★ 优化：只在阶段变化时更新 PolygonCollider2D 形状
+            // 不再每次 UpdateSprite 都更新，避免性能问题
+        }
+        
+        // 更新遮挡透明
+        if (occlusionTransparency != null)
+        {
+            bool shouldEnableOcclusion = config.enableOcclusion && currentState != TreeState.Stump;
+            occlusionTransparency.SetCanBeOccluded(shouldEnableOcclusion);
+        }
+        
+        // 如果碰撞体状态改变，通知NavGrid2D刷新
+        if (hadEnabledCollider != hasEnabledCollider)
+        {
+            RequestNavGridRefresh();
+        }
+    }
+    
+    /// <summary>
+    /// 从Sprite更新PolygonCollider2D
+    /// </summary>
+    private void UpdatePolygonColliderFromSprite(PolygonCollider2D poly, Sprite sprite)
+    {
+        if (poly == null || sprite == null) return;
+        
+        int shapeCount = sprite.GetPhysicsShapeCount();
+        if (shapeCount == 0)
+        {
+            poly.pathCount = 0;
+            return;
+        }
+        
+        poly.pathCount = shapeCount;
+        
+        List<Vector2> physicsShape = new List<Vector2>();
+        for (int i = 0; i < shapeCount; i++)
+        {
+            physicsShape.Clear();
+            sprite.GetPhysicsShape(i, physicsShape);
+            poly.SetPath(i, physicsShape);
+        }
+        
+        poly.offset = Vector2.zero;
+    }
+    
+    /// <summary>
+    /// 请求NavGrid2D刷新
+    /// </summary>
+    private void RequestNavGridRefresh()
+    {
+        if (IsInvoking(nameof(TriggerNavGridRefresh)))
+        {
+            CancelInvoke(nameof(TriggerNavGridRefresh));
+        }
+        Invoke(nameof(TriggerNavGridRefresh), 0.2f);
+    }
+    
+    private void TriggerNavGridRefresh()
+    {
+        NavGrid2D.OnRequestGridRefresh?.Invoke();
+        if (showDebugInfo)
+            Debug.Log($"<color=cyan>[TreeController] {gameObject.name} 通知NavGrid2D刷新网格</color>");
+    }
+    #endregion
+    
+    #region 影子系统
+    /// <summary>
+    /// 更新影子显示（包括 Sprite 切换、缩放和位置）
+    /// </summary>
+    private void UpdateShadowScale()
+    {
+        // 使用缓存的引用，如果未初始化则尝试初始化
+        if (_shadowRenderer == null)
+        {
+            InitializeShadowCache();
+            if (_shadowRenderer == null) return;
+        }
+        
+        // 判断是否应该显示影子
+        bool shouldShow = ShouldShowShadow();
+        
+        if (!shouldShow)
+        {
+            _shadowRenderer.enabled = false;
+            return;
+        }
+        
+        // 获取当前阶段的影子配置
+        ShadowConfig config = GetShadowConfigForCurrentStage();
+        
+        if (config == null || config.scale <= 0f)
+        {
+            _shadowRenderer.enabled = false;
+            return;
+        }
+        
+        // 启用影子
+        _shadowRenderer.enabled = true;
+        
+        // 切换影子 Sprite（如果配置了）
+        if (config.sprite != null)
+        {
+            _shadowRenderer.sprite = config.sprite;
+        }
+        else if (_originalShadowSprite != null)
+        {
+            // 回退到原始 Sprite
+            _shadowRenderer.sprite = _originalShadowSprite;
+        }
+        
+        // 设置缩放
+        _shadowTransform.localScale = new Vector3(config.scale, config.scale, 1f);
+        
+        // 对齐影子中心到父物体中心
+        AlignShadowCenter();
+    }
+    
+    /// <summary>
+    /// 判断是否应该显示影子
+    /// </summary>
+    private bool ShouldShowShadow()
+    {
+        // 树桩无影子
+        if (currentState == TreeState.Stump) return false;
+        
+        // 阶段0无影子
+        if (currentStageIndex < 1) return false;
+        
+        return true;
+    }
+    
+    /// <summary>
+    /// 获取当前阶段的影子配置
+    /// shadowConfigs 数组有5个元素，对应阶段1-5
+    /// </summary>
+    private ShadowConfig GetShadowConfigForCurrentStage()
+    {
+        // 阶段0没有影子
+        if (currentStageIndex < 1) return null;
+        
+        // 计算在 shadowConfigs 数组中的索引（阶段1对应索引0）
+        int configIndex = currentStageIndex - 1;
+        
+        if (shadowConfigs == null || configIndex >= shadowConfigs.Length)
+        {
+            return null;
+        }
+        
+        return shadowConfigs[configIndex];
+    }
+    
+    /// <summary>
+    /// 对齐影子中心到父物体中心
+    /// </summary>
+    private void AlignShadowCenter()
+    {
+        if (_shadowRenderer == null || _shadowRenderer.sprite == null) return;
+        
+        Bounds shadowBounds = _shadowRenderer.sprite.bounds;
+        float centerOffset = shadowBounds.center.y;
+        
+        Vector3 shadowPos = _shadowTransform.localPosition;
+        shadowPos.y = -centerOffset;
+        _shadowTransform.localPosition = shadowPos;
+    }
+    #endregion
+
+    
+    #region 音效系统
+    private void PlayChopHitSound()
+    {
+        if (chopHitSound != null)
+        {
+            AudioSource.PlayClipAtPoint(chopHitSound, GetPosition(), soundVolume);
+        }
+    }
+    
+    private void PlayChopFellSound()
+    {
+        if (chopFellSound != null)
+        {
+            AudioSource.PlayClipAtPoint(chopFellSound, GetPosition(), soundVolume);
+        }
+    }
+    
+    private void PlayDigOutSound()
+    {
+        if (digOutSound != null)
+        {
+            AudioSource.PlayClipAtPoint(digOutSound, GetPosition(), soundVolume);
+        }
+    }
+    
+    private void PlayTierInsufficientSound()
+    {
+        if (tierInsufficientSound != null)
+        {
+            AudioSource.PlayClipAtPoint(tierInsufficientSound, GetPosition(), soundVolume);
+        }
+    }
+    
+    /// <summary>
+    /// 播放斧头等级不足反馈
+    /// </summary>
+    private void PlayTierInsufficientFeedback(int currentTier)
+    {
+        // 播放金属碰撞音效
+        PlayTierInsufficientSound();
+        
+        // TODO: 显示UI提示 "斧头等级不足"
+        // 可以通过事件系统通知UI显示提示
+    }
+    #endregion
+    
+    #region 视觉效果
     /// <summary>
     /// 播放受击效果（抖动）
     /// </summary>
@@ -1364,13 +1791,12 @@ public class TreeController : MonoBehaviour, IResourceNode
         float shakeAmount = 0.08f;
         float elapsed = 0f;
         
-        // 根据命中方向决定抖动方向
         float shakeDir = hitDir.x != 0 ? Mathf.Sign(hitDir.x) : 1f;
         
         while (elapsed < shakeDuration)
         {
             float progress = elapsed / shakeDuration;
-            float damping = 1f - progress; // 衰减
+            float damping = 1f - progress;
             float x = Mathf.Sin(progress * Mathf.PI * 4) * shakeAmount * damping * shakeDir;
             spriteRenderer.transform.localPosition = originalPos + new Vector3(x, 0, 0);
             elapsed += Time.deltaTime;
@@ -1385,205 +1811,70 @@ public class TreeController : MonoBehaviour, IResourceNode
     /// </summary>
     private void SpawnLeafParticles()
     {
-        // 如果有 LeafSpawner 组件则调用
         var leafSpawner = GetComponent<LeafSpawner>();
         if (leafSpawner != null)
         {
             leafSpawner.SpawnLeaves(GetBounds());
         }
     }
-    
-    /// <summary>
-    /// 播放砍击音效
-    /// </summary>
-    private void PlayChopHitSound()
-    {
-        if (chopHitSound != null)
-        {
-            Vector3 pos = GetPosition();
-            AudioSource.PlayClipAtPoint(chopHitSound, pos, soundVolume);
-        }
-    }
-    
-    /// <summary>
-    /// 播放砍倒音效
-    /// </summary>
-    private void PlayChopFellSound()
-    {
-        if (chopFellSound != null)
-        {
-            Vector3 pos = GetPosition();
-            AudioSource.PlayClipAtPoint(chopFellSound, pos, soundVolume);
-        }
-    }
-    
     #endregion
     
-    /// <summary>
-    /// 对树木造成伤害（砍伐）
-    /// </summary>
-    /// <param name="damage">伤害值（默认1）</param>
-    /// <returns>是否已砍倒</returns>
-    public bool TakeDamage(int damage = 1)
-    {
-        if (currentState == TreeState.Stump) return true;
-        if (currentStage == GrowthStage.Sapling) return true; // 树苗不能砍
-        
-        // 初始化砍伐次数
-        if (currentChopCount <= 0)
-        {
-            currentChopCount = currentStage == GrowthStage.Small ? chopCountSmall : chopCountLarge;
-        }
-        
-        currentChopCount -= damage;
-        
-        if (currentChopCount <= 0)
-        {
-            ChopDown();
-            return true;
-        }
-        
-        return false;
-    }
-    
-    /// <summary>
-    /// 砍伐成树桩（并生成掉落物）
-    /// </summary>
-    public void ChopDown()
-    {
-        // ✅ 重置砍伐状态
-        if (occlusionTransparency != null)
-        {
-            occlusionTransparency.SetChoppingState(false);
-        }
-        
-        // 播放砍倒音效
-        PlayChopFellSound();
-        
-        // 生成掉落物品
-        SpawnDrops();
-        
-        // ✅ 启动倒下动画或直接转换为树桩
-        if (enableFallAnimation)
-        {
-            // 使用最后一次命中时记录的玩家朝向
-            StartCoroutine(FallAnimationCoroutine(lastHitPlayerDirection, lastHitPlayerFlipX));
-        }
-        else
-        {
-            // 直接转换为树桩
-            FinishChopDown();
-        }
-        
-        if (showDebugInfo)
-        {
-            Debug.Log($"<color=orange>[TreeController] {gameObject.name} 被砍倒！</color>");
-        }
-    }
-    
-    /// <summary>
-    /// 完成砍倒（转换为树桩）
-    /// </summary>
-    private void FinishChopDown()
-    {
-        currentState = TreeState.Stump;
-        currentChopCount = 0;
-        UpdateSprite();
-    }
-    
+    #region 倒下动画
     /// <summary>
     /// 倒下方向枚举
     /// </summary>
     public enum FallDirection
     {
-        Right,    // 向右倒（Down0, Up1）
-        Left,     // 向左倒（Down1, Up0）
-        Up        // 向上倒（Side0, Side1）
+        Right,
+        Left,
+        Up
     }
     
     /// <summary>
-    /// 根据玩家朝向和翻转状态判定倒下方向
-    /// ✅ 修正版：Direction 参数映射 0=Down, 1=Up, 2=Side
-    /// 
-    /// 判定表：
-    /// | 玩家朝向 | FlipX | 倒下方向 |
-    /// |---------|-------|---------|
-    /// | Down (0) | false | 向右倒 |
-    /// | Down (0) | true  | 向左倒 |
-    /// | Up (1)   | false | 向左倒 |
-    /// | Up (1)   | true  | 向右倒 |
-    /// | Side (2) | false | 向上倒 |
-    /// | Side (2) | true  | 向上倒 |
+    /// 根据玩家朝向判定倒下方向
+    /// Direction 参数映射：0=Down, 1=Up, 2=Side
     /// </summary>
     private FallDirection DetermineFallDirection(int playerDirection, bool playerFlipX)
     {
         switch (playerDirection)
         {
             case 0: // Down
-                // Down: 向右倒（flipX时向左倒）
                 return playerFlipX ? FallDirection.Left : FallDirection.Right;
-            case 1: // Up（不是 Side！）
-                // Up: 向左倒（flipX时向右倒）
+            case 1: // Up
                 return playerFlipX ? FallDirection.Right : FallDirection.Left;
-            case 2: // Side（不是 Up！）
-                // Side: 向上倒
+            case 2: // Side
                 return FallDirection.Up;
             default:
                 return FallDirection.Right;
         }
     }
     
-    /// <summary>
-    /// 计算旋转角度
-    /// </summary>
     private float CalculateTargetAngle(FallDirection fallDir)
     {
         return fallDir switch
         {
-            FallDirection.Right => -90f,   // 顺时针向右倒
-            FallDirection.Left => 90f,     // 逆时针向左倒
-            FallDirection.Up => 90f,       // 逆时针向上倒（透视效果）
+            FallDirection.Right => -90f,
+            FallDirection.Left => 90f,
+            FallDirection.Up => 90f,
             _ => 0f
         };
     }
     
     /// <summary>
-    /// 获取方向名称（调试用）
-    /// ✅ 修正：Direction 参数映射 0=Down, 1=Up, 2=Side
+    /// 倒下动画协程（转换为树桩）
     /// </summary>
-    private string GetDirectionName(int dir) => dir switch
-    {
-        0 => "Down",
-        1 => "Up",      // 不是 Side！
-        2 => "Side",    // 不是 Up！
-        _ => "Unknown"
-    };
-    
-    /// <summary>
-    /// 倒下动画协程
-    /// ✅ 修复版：树桩立即生成，倒下动画是纯视觉效果
-    /// 
-    /// 核心设计：
-    /// 1. 树桩在被砍到的那一刻就立着（原位置）
-    /// 2. 创建临时的倒下 Sprite（纯视觉，无碰撞）
-    /// 3. 倒下的树木不会推动玩家或其他物体
-    /// 4. 动画结束后销毁临时 Sprite
-    /// </summary>
-    /// <param name="playerDirection">玩家朝向（0=Down, 1=Up, 2=Side）</param>
-    /// <param name="playerFlipX">玩家是否水平翻转</param>
     private System.Collections.IEnumerator FallAnimationCoroutine(int playerDirection, bool playerFlipX)
     {
-        if (spriteRenderer == null) 
+        if (spriteRenderer == null)
         {
             FinishChopDown();
             yield break;
         }
         
-        // ✅ 判定倒下方向
         FallDirection fallDir = DetermineFallDirection(playerDirection, playerFlipX);
         float targetAngle = CalculateTargetAngle(fallDir);
         
-        // ✅ 保存当前 Sprite 信息用于创建临时倒下效果
+        // 保存当前 Sprite 信息
         Sprite fallingSprite = spriteRenderer.sprite;
         Vector3 originalWorldPos = spriteRenderer.transform.position;
         Vector3 originalScale = spriteRenderer.transform.localScale;
@@ -1591,31 +1882,14 @@ public class TreeController : MonoBehaviour, IResourceNode
         int sortingLayerID = spriteRenderer.sortingLayerID;
         int sortingOrder = spriteRenderer.sortingOrder;
         
-        // ✅ 计算 Sprite 的底部中心位置（树根视觉位置）
-        // 这是旋转的轴心点，无论如何旋转/缩放，这个点必须保持不变
         Bounds spriteBounds = spriteRenderer.bounds;
         Vector3 spriteBottomCenter = new Vector3(spriteBounds.center.x, spriteBounds.min.y, 0);
-        
-        // ✅ 计算 Sprite 中心到底部的偏移（用于旋转计算）
         float spriteHalfHeight = spriteBounds.extents.y;
-        
-        // ✅ 调试输出
-        if (showDebugInfo)
-        {
-            Debug.Log($"<color=cyan>[TreeController] 倒下判定:</color>\n" +
-                      $"  玩家朝向: {playerDirection} ({GetDirectionName(playerDirection)})\n" +
-                      $"  玩家翻转: {playerFlipX}\n" +
-                      $"  倒下方向: {fallDir}\n" +
-                      $"  Sprite中心: {spriteBounds.center}\n" +
-                      $"  Sprite底部中心(轴心): {spriteBottomCenter}\n" +
-                      $"  Sprite半高: {spriteHalfHeight}\n" +
-                      $"  旋转角度: {targetAngle}°");
-        }
         
         // 转换为树桩
         FinishChopDown();
         
-        // ✅ 创建临时的倒下 Sprite（纯视觉，无碰撞）
+        // 创建临时倒下 Sprite
         GameObject fallingTree = new GameObject("FallingTree_Temp");
         fallingTree.transform.position = originalWorldPos;
         fallingTree.transform.localScale = originalScale;
@@ -1623,74 +1897,53 @@ public class TreeController : MonoBehaviour, IResourceNode
         SpriteRenderer fallingSR = fallingTree.AddComponent<SpriteRenderer>();
         fallingSR.sprite = fallingSprite;
         fallingSR.sortingLayerID = sortingLayerID;
-        fallingSR.sortingOrder = sortingOrder - 1; // 在树桩后面
+        fallingSR.sortingOrder = sortingOrder - 1;
         fallingSR.color = originalColor;
         
-        // ✅ 动画参数
         float elapsed = 0f;
-        float duration = fallDuration;
-        
-        // 判断是侧向倒还是向上倒
         bool isSidefall = (fallDir == FallDirection.Left || fallDir == FallDirection.Right);
         
-        while (elapsed < duration)
+        while (elapsed < fallDuration)
         {
-            // 使用 t² 实现先慢后快（模拟重力加速）
-            float linearT = elapsed / duration;
-            float t = linearT * linearT; // 加速曲线
+            float linearT = elapsed / fallDuration;
+            float t = linearT * linearT;
             
             if (isSidefall)
             {
-                // ✅ 侧向倒：绕 Sprite 底部中心旋转
-                // 核心：树根位置（spriteBottomCenter）始终不变
                 float angle = targetAngle * t;
                 float rad = angle * Mathf.Deg2Rad;
                 
-                // 从底部中心到 Sprite 中心的向量（未旋转时是 (0, spriteHalfHeight)）
                 Vector3 centerOffset = new Vector3(0, spriteHalfHeight, 0);
-                
-                // 旋转这个偏移向量
                 Vector3 rotatedOffset = new Vector3(
                     centerOffset.x * Mathf.Cos(rad) - centerOffset.y * Mathf.Sin(rad),
                     centerOffset.x * Mathf.Sin(rad) + centerOffset.y * Mathf.Cos(rad),
                     0
                 );
                 
-                // 新的 Sprite 中心位置 = 底部中心 + 旋转后的偏移
                 Vector3 newCenter = spriteBottomCenter + rotatedOffset;
-                
                 fallingTree.transform.position = newCenter;
                 fallingTree.transform.rotation = Quaternion.Euler(0, 0, angle);
             }
             else
             {
-                // ✅ 向上倒：只做Y轴拉长然后消失（参数可在Inspector调试）
-                // 核心：树根位置始终不变
-                
                 float scaleY;
                 if (t < fallUpStretchPhase)
                 {
-                    // 拉长阶段：1.0 → fallUpMaxStretch
                     scaleY = Mathf.Lerp(1f, fallUpMaxStretch, t / fallUpStretchPhase);
                 }
                 else
                 {
-                    // 缩短阶段：fallUpMaxStretch → fallUpMinScale
                     scaleY = Mathf.Lerp(fallUpMaxStretch, fallUpMinScale, (t - fallUpStretchPhase) / (1f - fallUpStretchPhase));
                 }
                 
-                // 缩放后的新半高
                 float newHalfHeight = spriteHalfHeight * scaleY;
-                
-                // 新的 Sprite 中心 Y = 底部 Y + 新半高（保持树根不动）
                 float newCenterY = spriteBottomCenter.y + newHalfHeight;
                 
-                // X轴保持不变
                 fallingTree.transform.localScale = new Vector3(originalScale.x, originalScale.y * scaleY, originalScale.z);
                 fallingTree.transform.position = new Vector3(spriteBottomCenter.x, newCenterY, 0);
             }
             
-            // ✅ 淡出动画（最后 30% 开始淡出）
+            // 淡出
             if (linearT > 0.7f)
             {
                 float fadeT = (linearT - 0.7f) / 0.3f;
@@ -1703,46 +1956,147 @@ public class TreeController : MonoBehaviour, IResourceNode
             yield return null;
         }
         
-        // ✅ 动画结束，销毁临时 Sprite
         Destroy(fallingTree);
     }
     
     /// <summary>
-    /// 生成掉落物品
+    /// 倒下并销毁协程（无树桩）
     /// </summary>
-    private void SpawnDrops()
+    private System.Collections.IEnumerator FallAndDestroyCoroutine(int playerDirection, bool playerFlipX)
     {
-        if (dropTable == null) return;
-        
-        var drops = dropTable.GenerateDrops();
-        Vector3 dropOrigin = transform.parent != null ? transform.parent.position : transform.position;
-        
-        foreach (var drop in drops)
+        if (spriteRenderer == null)
         {
-            if (drop.item == null) continue;
-            
-            if (WorldSpawnService.Instance != null)
-            {
-                WorldSpawnService.Instance.SpawnMultiple(
-                    drop.item,
-                    drop.quality,
-                    drop.amount,
-                    dropOrigin,
-                    dropTable.spreadRadius
-                );
-            }
+            DestroyTree();
+            yield break;
         }
+        
+        FallDirection fallDir = DetermineFallDirection(playerDirection, playerFlipX);
+        float targetAngle = CalculateTargetAngle(fallDir);
+        
+        Sprite fallingSprite = spriteRenderer.sprite;
+        Vector3 originalWorldPos = spriteRenderer.transform.position;
+        Vector3 originalScale = spriteRenderer.transform.localScale;
+        Color originalColor = spriteRenderer.color;
+        int sortingLayerID = spriteRenderer.sortingLayerID;
+        int sortingOrder = spriteRenderer.sortingOrder;
+        
+        Bounds spriteBounds = spriteRenderer.bounds;
+        Vector3 spriteBottomCenter = new Vector3(spriteBounds.center.x, spriteBounds.min.y, 0);
+        float spriteHalfHeight = spriteBounds.extents.y;
+        
+        // 隐藏原始 Sprite
+        spriteRenderer.enabled = false;
+        
+        // 创建临时倒下 Sprite
+        GameObject fallingTree = new GameObject("FallingTree_Temp");
+        fallingTree.transform.position = originalWorldPos;
+        fallingTree.transform.localScale = originalScale;
+        
+        SpriteRenderer fallingSR = fallingTree.AddComponent<SpriteRenderer>();
+        fallingSR.sprite = fallingSprite;
+        fallingSR.sortingLayerID = sortingLayerID;
+        fallingSR.sortingOrder = sortingOrder;
+        fallingSR.color = originalColor;
+        
+        float elapsed = 0f;
+        bool isSidefall = (fallDir == FallDirection.Left || fallDir == FallDirection.Right);
+        
+        while (elapsed < fallDuration)
+        {
+            float linearT = elapsed / fallDuration;
+            float t = linearT * linearT;
+            
+            if (isSidefall)
+            {
+                float angle = targetAngle * t;
+                float rad = angle * Mathf.Deg2Rad;
+                
+                Vector3 centerOffset = new Vector3(0, spriteHalfHeight, 0);
+                Vector3 rotatedOffset = new Vector3(
+                    centerOffset.x * Mathf.Cos(rad) - centerOffset.y * Mathf.Sin(rad),
+                    centerOffset.x * Mathf.Sin(rad) + centerOffset.y * Mathf.Cos(rad),
+                    0
+                );
+                
+                Vector3 newCenter = spriteBottomCenter + rotatedOffset;
+                fallingTree.transform.position = newCenter;
+                fallingTree.transform.rotation = Quaternion.Euler(0, 0, angle);
+            }
+            else
+            {
+                float scaleY;
+                if (t < fallUpStretchPhase)
+                {
+                    scaleY = Mathf.Lerp(1f, fallUpMaxStretch, t / fallUpStretchPhase);
+                }
+                else
+                {
+                    scaleY = Mathf.Lerp(fallUpMaxStretch, fallUpMinScale, (t - fallUpStretchPhase) / (1f - fallUpStretchPhase));
+                }
+                
+                float newHalfHeight = spriteHalfHeight * scaleY;
+                float newCenterY = spriteBottomCenter.y + newHalfHeight;
+                
+                fallingTree.transform.localScale = new Vector3(originalScale.x, originalScale.y * scaleY, originalScale.z);
+                fallingTree.transform.position = new Vector3(spriteBottomCenter.x, newCenterY, 0);
+            }
+            
+            // 淡出
+            if (linearT > 0.7f)
+            {
+                float fadeT = (linearT - 0.7f) / 0.3f;
+                Color fadeColor = originalColor;
+                fadeColor.a = originalColor.a * (1f - fadeT);
+                fallingSR.color = fadeColor;
+            }
+            
+            elapsed += Time.deltaTime;
+            yield return null;
+        }
+        
+        Destroy(fallingTree);
+        DestroyTree();
+    }
+    #endregion
+    
+    #region 公共接口
+    public int GetCurrentStageIndex() => currentStageIndex;
+    public TreeState GetCurrentState() => currentState;
+    public SeasonManager.Season GetCurrentSeason() => currentSeason;
+    public int GetCurrentHealth() => currentHealth;
+    public int GetCurrentStumpHealth() => currentStumpHealth;
+    /// <summary>
+    /// 检查是否为冰封树苗
+    /// ★ 已废弃：树苗在冬季直接死亡，不再有冰封状态
+    /// </summary>
+    [System.Obsolete("树苗在冬季直接死亡，不再有冰封状态")]
+    public bool IsFrozenSapling() => false;
+    
+    /// <summary>
+    /// 设置枯萎状态
+    /// </summary>
+    public void SetWithered(bool withered)
+    {
+        if (withered)
+        {
+            currentState = TreeState.Withered;
+        }
+        else if (currentState == TreeState.Withered)
+        {
+            currentState = TreeState.Normal;
+        }
+        UpdateSprite();
     }
     
     /// <summary>
-    /// 重置
+    /// 重置树木
     /// </summary>
     public void Reset()
     {
-        currentStage = GrowthStage.Sapling;
+        currentStageIndex = 0;
         currentState = TreeState.Normal;
         isWeatherWithered = false;
-        isFrozenSapling = false;
+        daysInCurrentStage = 0;
         
         if (TimeManager.Instance != null)
         {
@@ -1750,24 +2104,74 @@ public class TreeController : MonoBehaviour, IResourceNode
             lastCheckDay = -1;
         }
         
+        InitializeHealth();
         UpdateSprite();
     }
-    
-    #region 公共接口
-    public GrowthStage GetCurrentStage() => currentStage;
-    public SeasonManager.Season GetCurrentSeason() => currentSeason;
-    public SeasonManager.VegetationSeason GetVegetationSeason() => SeasonManager.Instance != null ? SeasonManager.Instance.GetCurrentVegetationSeason() : SeasonManager.VegetationSeason.Spring;
-    public TreeState GetCurrentState() => currentState;
-    public bool IsFrozenSapling() => isFrozenSapling;
     #endregion
     
+    #region 编辑器
     #if UNITY_EDITOR
+    // ★ 运行时调试：缓存上一帧的状态值，用于检测 Inspector 中的修改
+    private int _lastRuntimeStageIndex = -1;
+    private TreeState _lastRuntimeState = TreeState.Normal;
+    private SeasonManager.Season _lastRuntimeSeason = SeasonManager.Season.Spring;
+    
+    /// <summary>
+    /// ★ 运行时 Inspector 调试更新
+    /// 在 Update 中检测 Inspector 参数变化并立即更新显示
+    /// </summary>
+    private void UpdateRuntimeInspectorDebug()
+    {
+        // 只在编辑器运行时生效
+        if (!Application.isPlaying) return;
+        if (!editorPreview) return;
+        
+        bool needUpdate = false;
+        
+        // 检测阶段变化
+        if (currentStageIndex != _lastRuntimeStageIndex)
+        {
+            _lastRuntimeStageIndex = currentStageIndex;
+            InitializeHealth(); // 重新初始化血量
+            needUpdate = true;
+            if (showDebugInfo)
+                Debug.Log($"<color=cyan>[TreeController] {gameObject.name} Inspector调试：阶段变更为 {currentStageIndex}</color>");
+        }
+        
+        // 检测状态变化
+        if (currentState != _lastRuntimeState)
+        {
+            _lastRuntimeState = currentState;
+            needUpdate = true;
+            if (showDebugInfo)
+                Debug.Log($"<color=cyan>[TreeController] {gameObject.name} Inspector调试：状态变更为 {currentState}</color>");
+        }
+        
+        // 检测季节变化（手动修改 Inspector 中的季节）
+        if (currentSeason != _lastRuntimeSeason)
+        {
+            _lastRuntimeSeason = currentSeason;
+            needUpdate = true;
+            if (showDebugInfo)
+                Debug.Log($"<color=cyan>[TreeController] {gameObject.name} Inspector调试：季节变更为 {currentSeason}</color>");
+        }
+        
+        if (needUpdate)
+        {
+            UpdateSprite();
+            UpdatePolygonColliderShape();
+        }
+    }
+    
+    private void Update()
+    {
+        // ★ 运行时 Inspector 调试
+        UpdateRuntimeInspectorDebug();
+    }
+    
     private void OnValidate()
     {
-        #if UNITY_EDITOR
-        // ✅ 只在编辑器模式下预览，运行时不触发
         if (!editorPreview) return;
-        if (Application.isPlaying) return; // 运行时完全跳过
         
         if (spriteRenderer == null)
         {
@@ -1775,98 +2179,148 @@ public class TreeController : MonoBehaviour, IResourceNode
             if (spriteRenderer == null) return;
         }
         
-        // 编辑器预览：监听阶段和状态变化
-        if (currentStage != lastEditorStage)
+        // 编辑模式下的实时预览
+        if (!Application.isPlaying)
         {
-            lastEditorStage = currentStage;
-            UpdateSprite();
+            if (currentStageIndex != lastEditorStageIndex || currentState != lastEditorState)
+            {
+                lastEditorStageIndex = currentStageIndex;
+                lastEditorState = currentState;
+                UpdateSprite();
+            }
         }
-        else if (currentState != lastEditorState)
+        else
         {
-            lastEditorState = currentState;
-            UpdateSprite();
+            // 运行时：初始化运行时缓存（首次）
+            if (_lastRuntimeStageIndex < 0)
+            {
+                _lastRuntimeStageIndex = currentStageIndex;
+                _lastRuntimeState = currentState;
+                _lastRuntimeSeason = currentSeason;
+            }
         }
-        #endif
     }
     
-    [UnityEditor.MenuItem("CONTEXT/TreeController/🔄 测试季节循环")]
-    private static void TestSeasonCycle(UnityEditor.MenuCommand command)
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🌱 设置阶段0（树苗）")]
+    private static void SetStage0(UnityEditor.MenuCommand command)
     {
-        TreeController tree = command.context as TreeController;
-        if (tree == null) return;
-        
-        SeasonManager.Season nextSeason = tree.currentSeason switch
-        {
-            SeasonManager.Season.Spring => SeasonManager.Season.Summer,
-            SeasonManager.Season.Summer => SeasonManager.Season.Autumn,
-            SeasonManager.Season.Autumn => SeasonManager.Season.Winter,
-            SeasonManager.Season.Winter => SeasonManager.Season.Spring,
-            _ => SeasonManager.Season.Spring
-        };
-        
-        tree.currentSeason = nextSeason;
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetStage(0);
         UnityEditor.EditorUtility.SetDirty(tree);
     }
     
-    [UnityEditor.MenuItem("CONTEXT/TreeController/🌱 测试成长")]
-    private static void TestGrow(UnityEditor.MenuCommand command)
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🌿 设置阶段1")]
+    private static void SetStage1(UnityEditor.MenuCommand command)
     {
-        TreeController tree = command.context as TreeController;
-        if (tree == null) return;
-        
-        tree.Grow();
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetStage(1);
         UnityEditor.EditorUtility.SetDirty(tree);
     }
     
-    [UnityEditor.MenuItem("CONTEXT/TreeController/🍂 测试枯萎")]
-    private static void TestWither(UnityEditor.MenuCommand command)
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🌲 设置阶段2")]
+    private static void SetStage2(UnityEditor.MenuCommand command)
     {
-        TreeController tree = command.context as TreeController;
-        if (tree == null) return;
-        
-        tree.SetWithered(true);
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetStage(2);
         UnityEditor.EditorUtility.SetDirty(tree);
     }
     
-    [UnityEditor.MenuItem("CONTEXT/TreeController/🪓 测试砍伐")]
-    private static void TestChop(UnityEditor.MenuCommand command)
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🌳 设置阶段3")]
+    private static void SetStage3(UnityEditor.MenuCommand command)
     {
-        TreeController tree = command.context as TreeController;
-        if (tree == null) return;
-        
-        tree.ChopDown();
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetStage(3);
         UnityEditor.EditorUtility.SetDirty(tree);
     }
     
-    [UnityEditor.MenuItem("CONTEXT/TreeController/━━━━━━━━━━━━━━━━", false, 1000)]
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🌴 设置阶段4")]
+    private static void SetStage4(UnityEditor.MenuCommand command)
+    {
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetStage(4);
+        UnityEditor.EditorUtility.SetDirty(tree);
+    }
+    
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🎄 设置阶段5（完全成熟）")]
+    private static void SetStage5(UnityEditor.MenuCommand command)
+    {
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetStage(5);
+        UnityEditor.EditorUtility.SetDirty(tree);
+    }
+    
+    [UnityEditor.MenuItem("CONTEXT/TreeController/━━━━━━━━━━━━━━━━", false, 100)]
     private static void Separator1(UnityEditor.MenuCommand command) { }
     
-    [UnityEditor.MenuItem("CONTEXT/TreeController/🔧 立即对齐当前Sprite", false, 1001)]
-    private static void AlignCurrentSprite(UnityEditor.MenuCommand command)
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🪓 测试砍伐", false, 101)]
+    private static void TestChop(UnityEditor.MenuCommand command)
     {
-        TreeController tree = command.context as TreeController;
-        if (tree == null) return;
-        
-        if (tree.spriteRenderer == null)
+        var tree = command.context as TreeController;
+        if (tree != null) tree.ChopDown();
+        UnityEditor.EditorUtility.SetDirty(tree);
+    }
+    
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🍂 测试枯萎", false, 102)]
+    private static void TestWither(UnityEditor.MenuCommand command)
+    {
+        var tree = command.context as TreeController;
+        if (tree != null) tree.SetWithered(true);
+        UnityEditor.EditorUtility.SetDirty(tree);
+    }
+    
+    [UnityEditor.MenuItem("CONTEXT/TreeController/🔄 重置", false, 103)]
+    private static void TestReset(UnityEditor.MenuCommand command)
+    {
+        var tree = command.context as TreeController;
+        if (tree != null) tree.Reset();
+        UnityEditor.EditorUtility.SetDirty(tree);
+    }
+    
+    [UnityEditor.MenuItem("CONTEXT/TreeController/━━━━━━━━━━━━━━━━ 2", false, 200)]
+    private static void Separator2(UnityEditor.MenuCommand command) { }
+    
+    [UnityEditor.MenuItem("CONTEXT/TreeController/📋 应用默认阶段配置", false, 201)]
+    private static void ApplyDefaultConfigs(UnityEditor.MenuCommand command)
+    {
+        var tree = command.context as TreeController;
+        if (tree != null)
         {
-            tree.spriteRenderer = tree.GetComponentInChildren<SpriteRenderer>();
-        }
-        
-        if (tree.spriteRenderer != null && tree.spriteRenderer.sprite != null)
-        {
-            // ✅ 新逻辑：让sprite底部对齐父物体中心
-            Bounds spriteBounds = tree.spriteRenderer.sprite.bounds;
-            float spriteBottomOffset = spriteBounds.min.y;
+            var so = new UnityEditor.SerializedObject(tree);
             
-            Transform treeTransform = tree.spriteRenderer.transform;
-            Vector3 localPos = treeTransform.localPosition;
-            localPos.y = -spriteBottomOffset;
-            treeTransform.localPosition = localPos;
+            // 应用阶段配置
+            var prop = so.FindProperty("stageConfigs");
+            var defaults = StageConfigFactory.CreateDefaultConfigs();
+            prop.arraySize = defaults.Length;
             
-            Debug.Log($"<color=cyan>[TreeController] {tree.gameObject.name} 已对齐Sprite (localY={localPos.y:F3})</color>");
+            for (int i = 0; i < defaults.Length; i++)
+            {
+                var element = prop.GetArrayElementAtIndex(i);
+                element.FindPropertyRelative("daysToNextStage").intValue = defaults[i].daysToNextStage;
+                element.FindPropertyRelative("health").intValue = defaults[i].health;
+                element.FindPropertyRelative("hasStump").boolValue = defaults[i].hasStump;
+                element.FindPropertyRelative("stumpHealth").intValue = defaults[i].stumpHealth;
+                element.FindPropertyRelative("enableCollider").boolValue = defaults[i].enableCollider;
+                element.FindPropertyRelative("enableOcclusion").boolValue = defaults[i].enableOcclusion;
+                element.FindPropertyRelative("acceptedToolType").enumValueIndex = (int)defaults[i].acceptedToolType;
+            }
+            
+            // 应用影子配置
+            var shadowProp = so.FindProperty("shadowConfigs");
+            var shadowDefaults = ShadowConfig.CreateDefaultConfigs();
+            shadowProp.arraySize = shadowDefaults.Length;
+            
+            for (int i = 0; i < shadowDefaults.Length; i++)
+            {
+                var element = shadowProp.GetArrayElementAtIndex(i);
+                element.FindPropertyRelative("sprite").objectReferenceValue = shadowDefaults[i].sprite;
+                element.FindPropertyRelative("scale").floatValue = shadowDefaults[i].scale;
+            }
+            
+            so.ApplyModifiedProperties();
+            Debug.Log($"<color=green>[TreeController] 已应用默认阶段配置和影子配置</color>");
         }
-        
         UnityEditor.EditorUtility.SetDirty(tree);
     }
     #endif
+    #endregion
 }

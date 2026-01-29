@@ -946,7 +946,7 @@ public class PlacementManager : MonoBehaviour
         var saplingData = savedItemData as SaplingData;
         if (saplingData == null) return;
         
-        var treeController = treeObject.GetComponentInChildren<TreeControllerV2>();
+        var treeController = treeObject.GetComponentInChildren<TreeController>();
         if (treeController != null)
         {
             treeController.SetStage(0);
@@ -1035,7 +1035,7 @@ public class PlacementManager : MonoBehaviour
         var saplingData = currentPlacementItem as SaplingData;
         if (saplingData == null) return;
         
-        var treeController = treeObject.GetComponentInChildren<TreeControllerV2>();
+        var treeController = treeObject.GetComponentInChildren<TreeController>();
         if (treeController != null)
         {
             treeController.SetStage(0);

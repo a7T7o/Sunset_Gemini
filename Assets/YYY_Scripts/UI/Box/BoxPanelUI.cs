@@ -431,13 +431,8 @@ namespace FarmGame.UI
         {
             if (!_isOpen) return;
 
-            // 🔥 P0-3：关闭时隐藏 Held 图标
-            var manager = InventoryInteractionManager.Instance;
-            if (manager != null && manager.IsHolding)
-            {
-                manager.Cancel();
-            }
-            HideDragIcon();
+            // 🔥 P1+-1：关闭前处理手持物品（物品归位逻辑）
+            ReturnHeldItemsBeforeClose();
 
             // 🔥 取消订阅箱子库存事件
             UnsubscribeFromChest();
@@ -723,6 +718,122 @@ namespace FarmGame.UI
         #endregion
 
         #region Database 防御性获取
+
+        /// <summary>
+        /// 🔥 P1+-1：关闭前处理手持物品（物品归位逻辑）
+        /// 优先级：原槽位 → 背包空位 → 扔在脚下
+        /// </summary>
+        private void ReturnHeldItemsBeforeClose()
+        {
+            // 情况 1：背包物品在手上（Manager 管辖）
+            var manager = InventoryInteractionManager.Instance;
+            if (manager != null && manager.IsHolding)
+            {
+                manager.ReturnHeldItemToInventory();
+                if (showDebugInfo)
+                    Debug.Log("[BoxPanelUI] Close: 通过 Manager 归位背包物品");
+            }
+            
+            // 情况 2：箱子物品在手上（SlotDragContext 管辖）
+            if (SlotDragContext.IsDragging)
+            {
+                ReturnChestItemToSource();
+                if (showDebugInfo)
+                    Debug.Log("[BoxPanelUI] Close: 归位箱子物品");
+            }
+            
+            // 确保隐藏拖拽图标
+            HideDragIcon();
+        }
+        
+        /// <summary>
+        /// 🔥 P1+-1：将箱子物品归位
+        /// 优先级：原槽位 → 箱子空位 → 背包空位 → 扔在脚下
+        /// </summary>
+        private void ReturnChestItemToSource()
+        {
+            if (!SlotDragContext.IsDragging) return;
+            
+            var item = SlotDragContext.DraggedItem;
+            if (item.IsEmpty)
+            {
+                SlotDragContext.End();
+                return;
+            }
+            
+            var sourceContainer = SlotDragContext.SourceContainer;
+            int sourceIndex = SlotDragContext.SourceSlotIndex;
+            
+            // 1. 尝试返回原槽位
+            if (sourceContainer != null)
+            {
+                var srcSlot = sourceContainer.GetSlot(sourceIndex);
+                if (srcSlot.IsEmpty)
+                {
+                    sourceContainer.SetSlot(sourceIndex, item);
+                    SlotDragContext.End();
+                    if (showDebugInfo)
+                        Debug.Log($"[BoxPanelUI] 箱子物品归位：返回原槽位 {sourceIndex}");
+                    return;
+                }
+                
+                // 尝试堆叠
+                if (srcSlot.CanStackWith(item))
+                {
+                    int maxStack = sourceContainer.GetMaxStack(item.itemId);
+                    int total = srcSlot.amount + item.amount;
+                    
+                    if (total <= maxStack)
+                    {
+                        srcSlot.amount = total;
+                        sourceContainer.SetSlot(sourceIndex, srcSlot);
+                        SlotDragContext.End();
+                        if (showDebugInfo)
+                            Debug.Log($"[BoxPanelUI] 箱子物品归位：堆叠到原槽位 {sourceIndex}");
+                        return;
+                    }
+                }
+            }
+            
+            // 2. 尝试放入箱子空位
+            if (_currentChest?.Inventory != null)
+            {
+                var chest = _currentChest.Inventory;
+                for (int i = 0; i < chest.Capacity; i++)
+                {
+                    if (chest.GetSlot(i).IsEmpty)
+                    {
+                        chest.SetSlot(i, item);
+                        SlotDragContext.End();
+                        if (showDebugInfo)
+                            Debug.Log($"[BoxPanelUI] 箱子物品归位：放入箱子空位 {i}");
+                        return;
+                    }
+                }
+            }
+            
+            // 3. 尝试放入背包空位
+            if (_inventoryService != null)
+            {
+                for (int i = 0; i < 36; i++)
+                {
+                    if (_inventoryService.GetSlot(i).IsEmpty)
+                    {
+                        _inventoryService.SetSlot(i, item);
+                        SlotDragContext.End();
+                        if (showDebugInfo)
+                            Debug.Log($"[BoxPanelUI] 箱子物品归位：放入背包空位 {i}");
+                        return;
+                    }
+                }
+            }
+            
+            // 4. 都满了，扔在脚下
+            ItemDropHelper.DropAtPlayer(item);
+            SlotDragContext.End();
+            if (showDebugInfo)
+                Debug.Log("[BoxPanelUI] 箱子物品归位：扔在脚下");
+        }
 
         /// <summary>
         /// 🔥 P0-3：防御性获取 _database

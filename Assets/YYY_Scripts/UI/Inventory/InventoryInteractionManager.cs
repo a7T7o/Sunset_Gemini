@@ -255,6 +255,80 @@ public class InventoryInteractionManager : MonoBehaviour
         HideHeldIcon();  // 🔥 P0-3：确保隐藏图标
     }
     
+    /// <summary>
+    /// 🔥 P1+-1：物品归位逻辑（关闭 UI 时调用）
+    /// 优先级：原槽位 → 背包空位 → 扔在脚下
+    /// 绝对禁止销毁物品！
+    /// </summary>
+    public void ReturnHeldItemToInventory()
+    {
+        if (!IsHolding || heldItem.IsEmpty) return;
+        
+        // 停止 Ctrl 长按
+        if (ctrlCoroutine != null) { StopCoroutine(ctrlCoroutine); ctrlCoroutine = null; }
+        
+        // 1. 尝试返回原槽位
+        ItemStack src = GetSlot(sourceIndex, sourceIsEquip);
+        if (src.IsEmpty)
+        {
+            SetSlot(sourceIndex, sourceIsEquip, heldItem);
+            Debug.Log($"[InventoryInteractionManager] 物品归位：返回原槽位 {sourceIndex}");
+            ResetState();
+            return;
+        }
+        
+        // 2. 原槽位有物品，尝试堆叠
+        if (src.itemId == heldItem.itemId && src.quality == heldItem.quality)
+        {
+            var itemData = database?.GetItemByID(heldItem.itemId);
+            int maxStack = itemData != null ? itemData.maxStackSize : 99;
+            int total = src.amount + heldItem.amount;
+            
+            if (total <= maxStack)
+            {
+                SetSlot(sourceIndex, sourceIsEquip, new ItemStack { itemId = src.itemId, quality = src.quality, amount = total });
+                Debug.Log($"[InventoryInteractionManager] 物品归位：堆叠到原槽位 {sourceIndex}");
+                ResetState();
+                return;
+            }
+            else
+            {
+                // 部分堆叠
+                SetSlot(sourceIndex, sourceIsEquip, new ItemStack { itemId = src.itemId, quality = src.quality, amount = maxStack });
+                heldItem.amount = total - maxStack;
+                Debug.Log($"[InventoryInteractionManager] 物品归位：部分堆叠到原槽位，剩余 {heldItem.amount}");
+            }
+        }
+        
+        // 3. 尝试放入背包空位
+        for (int i = 0; i < 36; i++)
+        {
+            if (inventory.GetSlot(i).IsEmpty)
+            {
+                inventory.SetSlot(i, heldItem);
+                Debug.Log($"[InventoryInteractionManager] 物品归位：放入背包空位 {i}");
+                ResetState();
+                return;
+            }
+        }
+        
+        // 4. 背包满了，扔在脚下
+        DropItemAtPlayerFeet();
+        ResetState();
+    }
+    
+    /// <summary>
+    /// 🔥 P1+-1：在玩家脚下丢弃物品
+    /// </summary>
+    private void DropItemAtPlayerFeet()
+    {
+        if (heldItem.IsEmpty) return;
+        
+        Debug.Log($"[InventoryInteractionManager] 物品归位：背包已满，扔在脚下");
+        FarmGame.UI.ItemDropHelper.DropAtPlayer(heldItem, dropCooldown);
+        heldItem = new ItemStack();
+    }
+    
     #endregion
 
     

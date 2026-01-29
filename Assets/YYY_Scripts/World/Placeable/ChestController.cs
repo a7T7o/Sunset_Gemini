@@ -2,6 +2,7 @@ using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 using FarmGame.Data;
+using FarmGame.Data.Core;
 using FarmGame.Combat;
 using FarmGame.UI;
 
@@ -12,10 +13,18 @@ namespace FarmGame.World
     /// 包括：受击、推动、上锁、解锁、打开、Sprite状态管理
     /// 实现 IResourceNode 接口以与工具攻击系统集成
     /// 实现 IInteractable 接口以支持统一的交互系统
+    /// 实现 IPersistentObject 接口以支持存档系统
     /// </summary>
-    public class ChestController : MonoBehaviour, IResourceNode, IInteractable
+    public class ChestController : MonoBehaviour, IResourceNode, IInteractable, IPersistentObject
     {
         #region 序列化字段
+
+        [Header("=== 持久化配置 ===")]
+        [SerializeField, Tooltip("对象唯一 ID（自动生成，勿手动修改）")]
+        private string _persistentId;
+        
+        [SerializeField, Tooltip("是否在编辑器中预生成 ID")]
+        private bool _preGenerateId = true;
 
         [Header("=== 数据引用 ===")]
         [Tooltip("关联的 StorageData")]
@@ -74,6 +83,12 @@ namespace FarmGame.World
         #region 私有字段
 
         private ChestInventory _inventory;
+        
+        /// <summary>
+        /// V2 库存（支持 InventoryItem）
+        /// </summary>
+        private ChestInventoryV2 _inventoryV2;
+        
         private bool _isPushing = false;
         private bool _isShaking = false;
         private bool _isOpen = false;
@@ -105,9 +120,14 @@ namespace FarmGame.World
         public ChestInventory Inventory => _inventory;
         
         /// <summary>
+        /// V2 库存（支持 InventoryItem，用于存档）
+        /// </summary>
+        public ChestInventoryV2 InventoryV2 => _inventoryV2;
+        
+        /// <summary>
         /// 兼容旧接口：获取所有内容物
         /// </summary>
-        public ItemStack[] Contents => _inventory?.GetAllSlots() ?? System.Array.Empty<ItemStack>();
+        public ItemStack[] Contents => _inventoryV2?.GetAllSlots() ?? _inventory?.GetAllSlots() ?? System.Array.Empty<ItemStack>();
         
         public bool IsPushing => _isPushing;
         public bool IsOpen => _isOpen;
@@ -117,7 +137,211 @@ namespace FarmGame.World
         /// <summary>
         /// 是否为空（委托给 ChestInventory）
         /// </summary>
-        public bool IsEmpty => _inventory == null || _inventory.IsEmpty;
+        public bool IsEmpty => (_inventoryV2 == null || _inventoryV2.IsEmpty) && (_inventory == null || _inventory.IsEmpty);
+
+        #endregion
+        
+        #region 数据同步
+        
+        /// <summary>
+        /// 🔥 P0-1 修复：将 _inventory 数据同步到 _inventoryV2
+        /// UI 操作修改的是 _inventory，存档保存的是 _inventoryV2
+        /// 必须在保存前调用此方法同步数据
+        /// </summary>
+        private void SyncInventoryToV2()
+        {
+            if (_inventory == null || _inventoryV2 == null) return;
+            
+            var slots = _inventory.GetAllSlots();
+            for (int i = 0; i < slots.Length && i < _inventoryV2.Capacity; i++)
+            {
+                var stack = slots[i];
+                if (stack.IsEmpty)
+                {
+                    _inventoryV2.ClearItem(i);
+                }
+                else
+                {
+                    // 将 ItemStack 转换为 InventoryItem
+                    var item = InventoryItem.FromItemStack(stack);
+                    _inventoryV2.SetItem(i, item);
+                }
+            }
+            
+            if (showDebugInfo)
+                Debug.Log($"[ChestController] SyncInventoryToV2: 同步了 {slots.Length} 个槽位");
+        }
+        
+        /// <summary>
+        /// 🔥 P0-1 修复：将 _inventoryV2 数据同步到 _inventory
+        /// 加载存档后调用此方法，确保 UI 显示正确
+        /// </summary>
+        private void SyncV2ToInventory()
+        {
+            if (_inventory == null || _inventoryV2 == null) return;
+            
+            for (int i = 0; i < _inventoryV2.Capacity && i < _inventory.Capacity; i++)
+            {
+                var item = _inventoryV2.GetItem(i);
+                if (item == null || item.IsEmpty)
+                {
+                    _inventory.ClearSlot(i);
+                }
+                else
+                {
+                    _inventory.SetSlot(i, item.ToItemStack());
+                }
+            }
+            
+            if (showDebugInfo)
+                Debug.Log($"[ChestController] SyncV2ToInventory: 同步了 {_inventoryV2.Capacity} 个槽位");
+        }
+        
+        #endregion
+
+        #region IPersistentObject 接口实现
+
+        /// <summary>
+        /// 对象唯一标识符
+        /// </summary>
+        public string PersistentId
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(_persistentId))
+                {
+                    _persistentId = System.Guid.NewGuid().ToString();
+                }
+                return _persistentId;
+            }
+        }
+
+        /// <summary>
+        /// 对象类型标识
+        /// </summary>
+        public string ObjectType => "Chest";
+
+        /// <summary>
+        /// 是否应该被保存
+        /// </summary>
+        public bool ShouldSave => gameObject.activeInHierarchy;
+
+        /// <summary>
+        /// 保存对象状态
+        /// Rule: P0-1 箱子存档 - 保存前同步 _inventory 到 _inventoryV2
+        /// </summary>
+        public WorldObjectSaveData Save()
+        {
+            var data = new WorldObjectSaveData
+            {
+                guid = PersistentId,
+                objectType = ObjectType,
+                sceneName = gameObject.scene.name,
+                isActive = gameObject.activeSelf,
+                layer = 1 // TODO: 从父物体获取楼层
+            };
+            
+            // 设置位置
+            data.SetPosition(transform.position);
+            data.rotationZ = transform.eulerAngles.z;
+            
+            // 创建箱子特有数据
+            var chestData = new ChestSaveData
+            {
+                capacity = storageData != null ? storageData.storageCapacity : 20,
+                isLocked = isLocked,
+                customName = storageData?.itemName
+            };
+            
+            // 🔥 P0-1 修复：保存前同步 _inventory 到 _inventoryV2
+            // UI 操作修改的是 _inventory，存档保存的是 _inventoryV2
+            // 必须在保存前同步数据
+            SyncInventoryToV2();
+            
+            // 保存库存数据（优先使用 V2）
+            if (_inventoryV2 != null)
+            {
+                chestData.slots = _inventoryV2.ToSaveData();
+            }
+            else if (_inventory != null)
+            {
+                // 兼容旧库存
+                chestData.slots = new List<InventorySlotSaveData>();
+                var slots = _inventory.GetAllSlots();
+                for (int i = 0; i < slots.Length; i++)
+                {
+                    chestData.slots.Add(new InventorySlotSaveData
+                    {
+                        slotIndex = i,
+                        itemId = slots[i].itemId,
+                        quality = slots[i].quality,
+                        amount = slots[i].amount
+                    });
+                }
+            }
+            
+            // 序列化为 JSON
+            data.genericData = JsonUtility.ToJson(chestData);
+            
+            if (showDebugInfo)
+                Debug.Log($"[ChestController] Save: GUID={PersistentId}, slots={chestData.slots?.Count ?? 0}");
+            
+            return data;
+        }
+
+        /// <summary>
+        /// 加载对象状态
+        /// Rule: P0-1 箱子存档 - 加载后同步 _inventoryV2 到 _inventory
+        /// </summary>
+        public void Load(WorldObjectSaveData data)
+        {
+            if (data == null) return;
+            
+            // 恢复位置
+            transform.position = data.GetPosition();
+            transform.rotation = Quaternion.Euler(0, 0, data.rotationZ);
+            
+            // 解析箱子特有数据
+            if (!string.IsNullOrEmpty(data.genericData))
+            {
+                var chestData = JsonUtility.FromJson<ChestSaveData>(data.genericData);
+                if (chestData != null)
+                {
+                    isLocked = chestData.isLocked;
+                    
+                    // 恢复库存数据
+                    if (_inventoryV2 != null && chestData.slots != null)
+                    {
+                        _inventoryV2.LoadFromSaveData(chestData.slots);
+                        // 🔥 P0-1 修复：同步到 _inventory，确保 UI 显示正确
+                        SyncV2ToInventory();
+                    }
+                    else if (_inventory != null && chestData.slots != null)
+                    {
+                        // 兼容旧库存
+                        var slots = new ItemStack[chestData.slots.Count];
+                        foreach (var slotData in chestData.slots)
+                        {
+                            if (slotData.slotIndex >= 0 && slotData.slotIndex < slots.Length)
+                            {
+                                slots[slotData.slotIndex] = new ItemStack(
+                                    slotData.itemId, 
+                                    slotData.quality, 
+                                    slotData.amount
+                                );
+                            }
+                        }
+                        _inventory.LoadFromData(slots);
+                    }
+                }
+            }
+            
+            // 更新视觉状态
+            UpdateSprite();
+            
+            if (showDebugInfo)
+                Debug.Log($"[ChestController] Load: GUID={PersistentId}, isLocked={isLocked}");
+        }
 
         #endregion
 
@@ -215,6 +439,14 @@ namespace FarmGame.World
                     Debug.Log($"[ChestController] 已注册到 ResourceNodeRegistry: {gameObject.name}");
             }
             
+            // 🔥 注册到持久化对象注册中心
+            if (PersistentObjectRegistry.Instance != null)
+            {
+                PersistentObjectRegistry.Instance.Register(this);
+                if (showDebugInfo)
+                    Debug.Log($"[ChestController] 已注册到 PersistentObjectRegistry: GUID={PersistentId}");
+            }
+            
             // 🔥 关键修复：箱子放置后通知 NavGrid 刷新
             // 延迟一帧确保碰撞体已完全初始化
             StartCoroutine(RequestNavGridRefreshDelayed());
@@ -243,6 +475,10 @@ namespace FarmGame.World
         {
             if (ResourceNodeRegistry.Instance != null)
                 ResourceNodeRegistry.Instance.Unregister(gameObject.GetInstanceID());
+            
+            // 🔥 从持久化对象注册中心注销
+            if (PersistentObjectRegistry.Instance != null)
+                PersistentObjectRegistry.Instance.Unregister(this);
         }
 
         #endregion
@@ -258,10 +494,13 @@ namespace FarmGame.World
 
                 // 🔥 使用 ChestInventory 替代 List<ItemStack>
                 _inventory = new ChestInventory(storageData.storageCapacity);
+                
+                // 🔥 同时初始化 V2 库存（支持 InventoryItem）
+                _inventoryV2 = new ChestInventoryV2(storageData.storageCapacity);
 
                 // 🔥 C4：添加调试日志验证每个箱子有独立的 ChestInventory 实例
                 if (showDebugInfo)
-                    Debug.Log($"[ChestController] 初始化: {storageData.itemName}, 血量={currentHealth}, 容量={storageData.storageCapacity}, instanceId={GetInstanceID()}, inventoryHash={_inventory.GetHashCode()}");
+                    Debug.Log($"[ChestController] 初始化: {storageData.itemName}, 血量={currentHealth}, 容量={storageData.storageCapacity}, instanceId={GetInstanceID()}, GUID={PersistentId}");
             }
 
             // 🔥 修正 Ⅳ：初始化时完整执行 Sprite → Collider → NavGrid 链路
@@ -373,14 +612,14 @@ namespace FarmGame.World
         }
         
         /// <summary>
-        /// 底部对齐 - 与 TreeControllerV2 保持一致
+        /// 底部对齐 - 与 TreeController 保持一致
         /// 修改子物体的 localPosition.y，使 Sprite 底部对齐到父物体位置
         /// </summary>
         private void AlignSpriteBottom()
         {
             if (_spriteRenderer == null || _spriteRenderer.sprite == null) return;
             
-            // 使用与 TreeControllerV2 完全一致的逻辑
+            // 使用与 TreeController 完全一致的逻辑
             Bounds spriteBounds = _spriteRenderer.sprite.bounds;
             float spriteBottomOffset = spriteBounds.min.y;
             
@@ -963,6 +1202,35 @@ namespace FarmGame.World
 
             Destroy(gameObject);
         }
+
+        #endregion
+        
+        #region 编辑器支持
+
+#if UNITY_EDITOR
+        /// <summary>
+        /// 在编辑器中预生成 ID
+        /// </summary>
+        private void OnValidate()
+        {
+            if (_preGenerateId && string.IsNullOrEmpty(_persistentId))
+            {
+                _persistentId = System.Guid.NewGuid().ToString();
+                UnityEditor.EditorUtility.SetDirty(this);
+            }
+        }
+        
+        /// <summary>
+        /// 重新生成持久化 ID
+        /// </summary>
+        [ContextMenu("重新生成持久化 ID")]
+        private void RegeneratePersistentId()
+        {
+            _persistentId = System.Guid.NewGuid().ToString();
+            UnityEditor.EditorUtility.SetDirty(this);
+            Debug.Log($"[ChestController] 已重新生成 ID: {_persistentId}");
+        }
+#endif
 
         #endregion
     }

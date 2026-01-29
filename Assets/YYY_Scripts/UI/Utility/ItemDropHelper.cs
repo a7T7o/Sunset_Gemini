@@ -16,6 +16,11 @@ namespace FarmGame.UI
     /// 1. DRY - 消除三处重复的 SpawnById 调用
     /// 2. 内部处理 setSpawnCooldown: false
     /// 3. 缓存 PlayerController 引用
+    /// 
+    /// 【TODO - Phase 3】
+    /// [Future] Update Drop System to support InstanceData (durability)
+    /// 当前只支持 ItemStack（ID + 数量 + 品质），不支持 InventoryItem 的实例数据（耐久度等）
+    /// 需要在 Phase 3 重构时添加 DropAtPlayer(InventoryItem item) 重载
     /// </summary>
     public static class ItemDropHelper
     {

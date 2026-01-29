@@ -292,7 +292,7 @@ public static class PlacementGridCalculator
     /// 计算底部对齐后 Collider 中心相对于物品原点的位置
     /// 这是预览和放置都需要使用的核心计算
     /// 
-    /// 原理：TreeControllerV2 和 ChestController 在 Awake/Start 时会执行底部对齐
+    /// 原理：TreeController 和 ChestController 在 Awake/Start 时会执行底部对齐
     /// 底部对齐会将 Sprite 的 localPosition.y 设置为 -sprite.bounds.min.y
     /// 这会改变 Collider 相对于物品原点的位置
     /// </summary>

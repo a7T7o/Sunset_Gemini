@@ -50,12 +50,12 @@ namespace FarmGame.Events
         public GameObject TreeObject;
         
         /// <summary>树木控制器引用</summary>
-        public TreeControllerV2 TreeController;
+        public TreeController TreeController;
         
         /// <summary>种植时间戳</summary>
         public float Timestamp;
 
-        public SaplingPlantedEventData(Vector3 position, SaplingData saplingData, GameObject treeObject, TreeControllerV2 treeController)
+        public SaplingPlantedEventData(Vector3 position, SaplingData saplingData, GameObject treeObject, TreeController treeController)
         {
             Position = position;
             SaplingData = saplingData;

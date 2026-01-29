@@ -30,6 +30,30 @@ public class InventorySlotInteraction : MonoBehaviour,
     private float pressTime;
     private Vector2 pressPosition;
     
+    #region 🔥 箱子槽位连续操作状态
+    
+    /// <summary>
+    /// 箱子槽位：是否通过 Shift 拿起（用于连续二分）
+    /// </summary>
+    private bool _chestHeldByShift = false;
+    
+    /// <summary>
+    /// 箱子槽位：是否通过 Ctrl 拿起（用于连续拿取）
+    /// </summary>
+    private bool _chestHeldByCtrl = false;
+    
+    /// <summary>
+    /// 箱子槽位：Ctrl 长按协程
+    /// </summary>
+    private Coroutine _chestCtrlCoroutine;
+    
+    /// <summary>
+    /// 箱子槽位：Ctrl 长按拿取速率（次/秒）
+    /// </summary>
+    private const float CHEST_CTRL_PICKUP_RATE = 3.5f;
+    
+    #endregion
+    
     #region 缓存引用（性能优化）
     
     private InventoryService _cachedInventoryService;
@@ -178,6 +202,13 @@ public class InventorySlotInteraction : MonoBehaviour,
     {
         if (eventData.button != PointerEventData.InputButton.Left) return;
         
+        // 🔥 修复：如果已经在 Held 状态（通过 Shift/Ctrl 拿起），不要开始拖拽
+        // 与背包区域行为保持一致：Held 状态下移动鼠标不会触发拖拽
+        if (SlotDragContext.IsDragging || _chestHeldByShift || _chestHeldByCtrl)
+        {
+            return;
+        }
+        
         float holdTime = Time.time - pressTime;
         float moveDistance = Vector2.Distance(eventData.position, pressPosition);
         
@@ -189,6 +220,7 @@ public class InventorySlotInteraction : MonoBehaviour,
         // 箱子槽位拖拽
         if (IsChestSlot)
         {
+            
             var chest = container as ChestInventory;
             if (chest == null) return;
             
@@ -261,6 +293,7 @@ public class InventorySlotInteraction : MonoBehaviour,
             // 没有放到有效目标，返回原位
             SlotDragContext.Cancel();
             HideDragIcon();
+            ResetChestHeldState();  // 🔥 重置状态
             return;
         }
         
@@ -323,6 +356,7 @@ public class InventorySlotInteraction : MonoBehaviour,
             }
             HideDragIcon();
             SlotDragContext.End();
+            ResetChestHeldState();  // 🔥 重置状态
             return;
         }
         
@@ -337,6 +371,7 @@ public class InventorySlotInteraction : MonoBehaviour,
             }
             HideDragIcon();
             SlotDragContext.End();
+            ResetChestHeldState();  // 🔥 重置状态
             return;
         }
         
@@ -351,6 +386,7 @@ public class InventorySlotInteraction : MonoBehaviour,
             }
             HideDragIcon();
             SlotDragContext.End();
+            ResetChestHeldState();  // 🔥 重置状态
             return;
         }
         
@@ -364,6 +400,7 @@ public class InventorySlotInteraction : MonoBehaviour,
             }
             HideDragIcon();
             SlotDragContext.End();
+            ResetChestHeldState();  // 🔥 重置状态
         }
     }
     
@@ -371,7 +408,24 @@ public class InventorySlotInteraction : MonoBehaviour,
     {
         if (sourceIndex == targetIndex)
         {
-            container.SetSlot(sourceIndex, draggedItem);
+            // 🔥 修复 P0-3：放回原位时应该合并，而不是覆盖
+            // 场景：Ctrl+左键拿起1个，再点击放回同一格子
+            var currentSlot = container.GetSlot(sourceIndex);
+            if (currentSlot.IsEmpty)
+            {
+                container.SetSlot(sourceIndex, draggedItem);
+            }
+            else if (currentSlot.CanStackWith(draggedItem))
+            {
+                // 合并数量
+                currentSlot.amount += draggedItem.amount;
+                container.SetSlot(sourceIndex, currentSlot);
+            }
+            else
+            {
+                // 不同物品，直接覆盖（理论上不应该发生，因为是同一槽位）
+                container.SetSlot(sourceIndex, draggedItem);
+            }
             // 🔥 选中状态优化：放回原位也选中
             SelectTargetSlot();
             return;
@@ -409,10 +463,34 @@ public class InventorySlotInteraction : MonoBehaviour,
             return;
         }
         
-        container.SetSlot(targetIndex, draggedItem);
-        container.SetSlot(sourceIndex, targetSlot);
-        // 🔥 选中状态优化：交换后选中目标槽位
-        SelectTargetSlot();
+        // 🔥 修复 P0-4：不同物品时，检查源槽位是否为空
+        // 与背包 ExecutePlacement 逻辑保持一致
+        var sourceSlot = container.GetSlot(sourceIndex);
+        
+        if (sourceSlot.IsEmpty || isDragging)
+        {
+            // 源槽位为空 或 拖拽模式：允许交换
+            container.SetSlot(targetIndex, draggedItem);
+            container.SetSlot(sourceIndex, targetSlot);
+            // 🔥 选中状态优化：交换后选中目标槽位
+            SelectTargetSlot();
+        }
+        else
+        {
+            // 源槽位非空 且 Held 模式：返回原位（合并回源槽位）
+            if (sourceSlot.CanStackWith(draggedItem))
+            {
+                sourceSlot.amount += draggedItem.amount;
+                container.SetSlot(sourceIndex, sourceSlot);
+            }
+            else
+            {
+                // 不同物品，无法合并，直接放回（理论上不应该发生）
+                container.SetSlot(sourceIndex, draggedItem);
+            }
+            // 🔥 选中状态优化：返回原位也选中源槽位
+            // 注意：这里需要选中源槽位，而不是目标槽位
+        }
     }
     
     private void HandleChestToInventoryDrop(ChestInventory chest, int chestIndex, InventoryService inventory, int invIndex, ItemStack draggedItem)
@@ -451,11 +529,34 @@ public class InventorySlotInteraction : MonoBehaviour,
             return;
         }
         
-        inventory.SetSlot(invIndex, draggedItem);
-        chest.SetSlot(chestIndex, invSlot);
-        // 🔥 选中状态优化：跨区域交换 - 取消源区域选中，选中目标槽位
-        DeselectSourceSlot();
-        SelectTargetSlot();
+        // 🔥 修复 P0-4：不同物品时，检查源槽位是否为空
+        // 与背包 ExecutePlacement 逻辑保持一致
+        var sourceSlot = chest.GetSlot(chestIndex);
+        
+        if (sourceSlot.IsEmpty || isDragging)
+        {
+            // 源槽位为空 或 拖拽模式：允许交换
+            inventory.SetSlot(invIndex, draggedItem);
+            chest.SetSlot(chestIndex, invSlot);
+            // 🔥 选中状态优化：跨区域交换 - 取消源区域选中，选中目标槽位
+            DeselectSourceSlot();
+            SelectTargetSlot();
+        }
+        else
+        {
+            // 源槽位非空 且 Held 模式：返回原位（合并回源槽位）
+            if (sourceSlot.CanStackWith(draggedItem))
+            {
+                sourceSlot.amount += draggedItem.amount;
+                chest.SetSlot(chestIndex, sourceSlot);
+            }
+            else
+            {
+                // 不同物品，无法合并，直接放回（理论上不应该发生）
+                chest.SetSlot(chestIndex, draggedItem);
+            }
+            // 返回原位，不改变选中状态
+        }
     }
     
     private void HandleInventoryToChestDrop(InventoryService inventory, int invIndex, ChestInventory chest, int chestIndex, ItemStack draggedItem)
@@ -494,11 +595,34 @@ public class InventorySlotInteraction : MonoBehaviour,
             return;
         }
         
-        chest.SetSlot(chestIndex, draggedItem);
-        inventory.SetSlot(invIndex, chestSlot);
-        // 🔥 选中状态优化：跨区域交换 - 取消源区域选中，选中目标槽位
-        DeselectSourceSlot();
-        SelectTargetSlot();
+        // 🔥 修复 P0-4：不同物品时，检查源槽位是否为空
+        // 与背包 ExecutePlacement 逻辑保持一致
+        var sourceSlot = inventory.GetSlot(invIndex);
+        
+        if (sourceSlot.IsEmpty || isDragging)
+        {
+            // 源槽位为空 或 拖拽模式：允许交换
+            chest.SetSlot(chestIndex, draggedItem);
+            inventory.SetSlot(invIndex, chestSlot);
+            // 🔥 选中状态优化：跨区域交换 - 取消源区域选中，选中目标槽位
+            DeselectSourceSlot();
+            SelectTargetSlot();
+        }
+        else
+        {
+            // 源槽位非空 且 Held 模式：返回原位（合并回源槽位）
+            if (sourceSlot.CanStackWith(draggedItem))
+            {
+                sourceSlot.amount += draggedItem.amount;
+                inventory.SetSlot(invIndex, sourceSlot);
+            }
+            else
+            {
+                // 不同物品，无法合并，直接放回（理论上不应该发生）
+                inventory.SetSlot(invIndex, draggedItem);
+            }
+            // 返回原位，不改变选中状态
+        }
     }
     
     #endregion
@@ -560,6 +684,10 @@ public class InventorySlotInteraction : MonoBehaviour,
                 chest.SetSlot(index, new ItemStack { itemId = slot.itemId, quality = slot.quality, amount = sourceAmount });
             else
                 chest.ClearSlot(index);
+            
+            // 🔥 记录状态：通过 Shift 拿起
+            _chestHeldByShift = true;
+            _chestHeldByCtrl = false;
         }
         else // ctrl
         {
@@ -570,6 +698,15 @@ public class InventorySlotInteraction : MonoBehaviour,
                 chest.SetSlot(index, new ItemStack { itemId = slot.itemId, quality = slot.quality, amount = slot.amount - 1 });
             else
                 chest.ClearSlot(index);
+            
+            // 🔥 记录状态：通过 Ctrl 拿起
+            _chestHeldByShift = false;
+            _chestHeldByCtrl = true;
+            
+            // 🔥 启动长按协程
+            if (_chestCtrlCoroutine != null)
+                StopCoroutine(_chestCtrlCoroutine);
+            _chestCtrlCoroutine = StartCoroutine(ContinueChestCtrlPickup(chest, index, pickupItem.itemId, pickupItem.quality));
         }
         
         // 使用 SlotDragContext 管理 Held 状态
@@ -578,21 +715,136 @@ public class InventorySlotInteraction : MonoBehaviour,
     }
     
     /// <summary>
+    /// 🔥 箱子槽位：Ctrl 长按连续拿取协程
+    /// </summary>
+    private System.Collections.IEnumerator ContinueChestCtrlPickup(ChestInventory chest, int sourceIndex, int itemId, int quality)
+    {
+        float interval = 1f / CHEST_CTRL_PICKUP_RATE;
+        
+        while (true)
+        {
+            yield return new WaitForSeconds(interval);
+            
+            // 检查按键状态
+            bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            bool mouse = Input.GetMouseButton(0);
+            if (!ctrl || !mouse) break;
+            
+            // 检查 SlotDragContext 状态
+            if (!SlotDragContext.IsDragging) break;
+            
+            // 从源槽位继续拿取
+            var src = chest.GetSlot(sourceIndex);
+            if (src.IsEmpty || src.itemId != itemId) break;
+            
+            // 增加手上物品数量
+            var draggedItem = SlotDragContext.DraggedItem;
+            draggedItem.amount++;
+            
+            // 🔥 使用 UpdateDraggedItem 更新，避免互斥检查
+            SlotDragContext.UpdateDraggedItem(draggedItem);
+            
+            // 更新源槽位
+            if (src.amount > 1)
+                chest.SetSlot(sourceIndex, new ItemStack { itemId = src.itemId, quality = src.quality, amount = src.amount - 1 });
+            else
+            {
+                chest.ClearSlot(sourceIndex);
+                ShowDragIcon(draggedItem);
+                break;  // 源槽位空了，停止
+            }
+            
+            ShowDragIcon(draggedItem);
+        }
+        
+        _chestCtrlCoroutine = null;
+    }
+    
+    /// <summary>
     /// 处理 SlotDragContext 状态下的点击（放置到当前槽位）
     /// </summary>
     private void HandleSlotDragContextClick()
     {
+        // 🔥 停止 Ctrl 长按协程
+        if (_chestCtrlCoroutine != null)
+        {
+            StopCoroutine(_chestCtrlCoroutine);
+            _chestCtrlCoroutine = null;
+        }
+        
         int targetIndex = SlotIndex;
         var targetContainer = CurrentContainer;
         
         if (targetContainer == null)
         {
+            ResetChestHeldState();
             SlotDragContext.Cancel();
             HideDragIcon();
             return;
         }
         
+        // 🔥 检查是否是 Shift 连续二分场景
+        // 条件：通过 Shift 拿起 + 点击源槽位 + 按住 Shift
+        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+        if (_chestHeldByShift && shift && 
+            targetIndex == SlotDragContext.SourceSlotIndex && 
+            targetContainer == SlotDragContext.SourceContainer)
+        {
+            ContinueChestShiftSplit();
+            return;
+        }
+        
+        // 正常放置逻辑
         HandleSlotDragContextDrop(targetIndex, targetContainer);
+        ResetChestHeldState();
+    }
+    
+    /// <summary>
+    /// 🔥 箱子槽位：Shift 连续二分
+    /// </summary>
+    private void ContinueChestShiftSplit()
+    {
+        var draggedItem = SlotDragContext.DraggedItem;
+        
+        // 手上只有 1 个时，不执行二分
+        if (draggedItem.amount <= 1) return;
+        
+        // 向下取整返回，向上取整保留在手上
+        int returnAmount = draggedItem.amount / 2;
+        int handAmount = draggedItem.amount - returnAmount;
+        
+        // 更新手上物品
+        draggedItem.amount = handAmount;
+        
+        // 更新源槽位
+        var sourceContainer = SlotDragContext.SourceContainer;
+        int sourceIndex = SlotDragContext.SourceSlotIndex;
+        var src = sourceContainer.GetSlot(sourceIndex);
+        
+        sourceContainer.SetSlot(sourceIndex, new ItemStack { 
+            itemId = src.itemId, 
+            quality = src.quality, 
+            amount = src.amount + returnAmount 
+        });
+        
+        // 🔥 使用 UpdateDraggedItem 更新，避免互斥检查
+        SlotDragContext.UpdateDraggedItem(draggedItem);
+        
+        ShowDragIcon(draggedItem);
+    }
+    
+    /// <summary>
+    /// 🔥 重置箱子槽位 Held 状态
+    /// </summary>
+    private void ResetChestHeldState()
+    {
+        _chestHeldByShift = false;
+        _chestHeldByCtrl = false;
+        if (_chestCtrlCoroutine != null)
+        {
+            StopCoroutine(_chestCtrlCoroutine);
+            _chestCtrlCoroutine = null;
+        }
     }
     
     /// <summary>
@@ -707,6 +959,7 @@ public class InventorySlotInteraction : MonoBehaviour,
         
         SlotDragContext.End();
         HideDragIcon();
+        ResetChestHeldState();  // 🔥 重置状态
     }
     
     /// <summary>
