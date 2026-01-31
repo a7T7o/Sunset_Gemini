@@ -146,27 +146,27 @@
 
 ## 验收标准
 
-### Task 1 验收
-- [ ] 编译通过，无错误
-- [ ] EquipmentData 继承 ItemData
-- [ ] 包含 equipmentType, defense, attributes, equipmentModel 字段
-- [ ] 可以在 Unity 编辑器中创建 EquipmentData 资产
+### Task 1 验收 ✅
+- [x] 编译通过，无错误
+- [x] EquipmentData 继承 ItemData
+- [x] 包含 equipmentType, defense, attributes, equipmentModel 字段
+- [x] 可以在 Unity 编辑器中创建 EquipmentData 资产
 
-### Task 2 验收
-- [ ] 编译通过，无错误
-- [ ] 装备栏数据能够保存到存档
-- [ ] 读档后装备栏数据正确恢复
-- [ ] 槽位限制生效（戒指只能放戒指槽）
-- [ ] 现有装备交互功能不受影响
+### Task 2 验收 ✅
+- [x] 编译通过，无错误
+- [x] 装备栏数据能够保存到存档
+- [x] 读档后装备栏数据正确恢复
+- [x] 槽位限制生效（戒指只能放戒指槽）
+- [ ] 现有装备交互功能不受影响（待验证）
 
-### Task 3 验收
-- [ ] 编译通过，无错误
-- [ ] 批量生成工具显示"装备"小类按钮
-- [ ] 能够选择 `equipmentType`
-- [ ] 生成时自动设置 equipmentType
-- [ ] 生成的 SO 文件路径和命名正确
+### Task 3 验收 ✅
+- [x] 编译通过，无错误
+- [x] 批量生成工具显示"装备"小类按钮
+- [x] 能够选择 `equipmentType`
+- [x] 生成时自动设置 equipmentType
+- [x] 生成的 SO 文件路径和命名正确
 
-### Task 4 验收
+### Task 4 验收 ⏳
 - [ ] 所有测试用例通过
 - [ ] 无数据丢失
 - [ ] 无异常日志

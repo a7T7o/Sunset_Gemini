@@ -12,9 +12,8 @@ namespace FarmGame.Data
     public class EquipmentData : ItemData
     {
         [Header("=== 装备专属属性 ===")]
-        
-        [Tooltip("装备类型（决定可装备的槽位）")]
-        public new EquipmentType equipmentType = EquipmentType.None;
+        // 注意：equipmentType 字段继承自 ItemData 基类，不要重复定义！
+        // Unity 序列化系统不允许子类用 new 关键字覆盖基类字段
         
         [Tooltip("防御力")]
         [Range(0, 999)]

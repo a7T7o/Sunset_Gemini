@@ -339,6 +339,25 @@ public class InventorySlotInteraction : MonoBehaviour,
         int sourceIndex = SlotDragContext.SourceSlotIndex;
         var draggedItem = SlotDragContext.DraggedItem;
         
+        // 🔥 P0 修复：处理装备槽位（targetContainer == null && isEquip == true）
+        if (targetContainer == null && isEquip)
+        {
+            HandleDropToEquipmentSlot(sourceContainer, sourceIndex, targetIndex, draggedItem);
+            HideDragIcon();
+            SlotDragContext.End();
+            ResetChestHeldState();
+            return;
+        }
+        
+        // 🔥 P0 修复：targetContainer 为 null 但不是装备槽位，取消操作
+        if (targetContainer == null)
+        {
+            SlotDragContext.Cancel();
+            HideDragIcon();
+            ResetChestHeldState();
+            return;
+        }
+        
         bool sourceIsChest = sourceContainer is ChestInventory;
         bool targetIsChest = targetContainer is ChestInventory;
         
@@ -623,6 +642,106 @@ public class InventorySlotInteraction : MonoBehaviour,
             }
             // 返回原位，不改变选中状态
         }
+    }
+    
+    /// <summary>
+    /// 🔥 P0 修复：处理拖拽到装备槽位
+    /// 核心原则：验证失败必须回滚，绝不吞噬物品
+    /// </summary>
+    private void HandleDropToEquipmentSlot(IItemContainer sourceContainer, int sourceIndex, int targetEquipIndex, ItemStack draggedItem)
+    {
+        var equipService = CachedEquipmentService;
+        var invService = CachedInventoryService;
+        
+        if (equipService == null || invService == null || invService.Database == null)
+        {
+            // 服务不可用，回滚到源槽位
+            Debug.LogWarning("[InventorySlotInteraction] 装备服务不可用，回滚物品");
+            SlotDragContext.Cancel();
+            return;
+        }
+        
+        var itemData = invService.Database.GetItemByID(draggedItem.itemId);
+        
+        // 🔥 核心验证：检查物品是否可以装备到该槽位
+        if (!equipService.CanEquipAt(targetEquipIndex, itemData))
+        {
+            // 验证失败，回滚到源槽位
+            Debug.Log($"[InventorySlotInteraction] 物品 {itemData?.itemName} 无法装备到槽位 {targetEquipIndex}，回滚");
+            SlotDragContext.Cancel();
+            return;
+        }
+        
+        // 验证通过，执行装备操作
+        var currentEquip = equipService.GetEquip(targetEquipIndex);
+        
+        // 设置新装备
+        bool success = equipService.SetEquip(targetEquipIndex, draggedItem);
+        if (!success)
+        {
+            // 设置失败，回滚
+            Debug.LogWarning("[InventorySlotInteraction] SetEquip 失败，回滚物品");
+            SlotDragContext.Cancel();
+            return;
+        }
+        
+        // 如果原装备槽位有物品，需要放回源位置
+        if (!currentEquip.IsEmpty)
+        {
+            // 尝试放回源槽位
+            if (sourceContainer is ChestInventory chest)
+            {
+                var sourceSlot = chest.GetSlot(sourceIndex);
+                if (sourceSlot.IsEmpty)
+                {
+                    chest.SetSlot(sourceIndex, currentEquip);
+                }
+                else
+                {
+                    // 源槽位非空，尝试找空位
+                    bool placed = false;
+                    for (int i = 0; i < chest.Capacity; i++)
+                    {
+                        if (chest.GetSlot(i).IsEmpty)
+                        {
+                            chest.SetSlot(i, currentEquip);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if (!placed)
+                    {
+                        // 箱子满了，放到背包
+                        int remaining = invService.AddItem(currentEquip.itemId, currentEquip.quality, currentEquip.amount);
+                        if (remaining > 0)
+                        {
+                            // 背包也满了，扔在脚下
+                            FarmGame.UI.ItemDropHelper.DropAtPlayer(new ItemStack { itemId = currentEquip.itemId, quality = currentEquip.quality, amount = remaining });
+                        }
+                    }
+                }
+            }
+            else if (sourceContainer is InventoryService inv)
+            {
+                var sourceSlot = inv.GetSlot(sourceIndex);
+                if (sourceSlot.IsEmpty)
+                {
+                    inv.SetSlot(sourceIndex, currentEquip);
+                }
+                else
+                {
+                    // 源槽位非空，尝试找空位
+                    int remaining = inv.AddItem(currentEquip.itemId, currentEquip.quality, currentEquip.amount);
+                    if (remaining > 0)
+                    {
+                        // 背包满了，扔在脚下
+                        FarmGame.UI.ItemDropHelper.DropAtPlayer(new ItemStack { itemId = currentEquip.itemId, quality = currentEquip.quality, amount = remaining });
+                    }
+                }
+            }
+        }
+        
+        Debug.Log($"[InventorySlotInteraction] 成功装备 {itemData?.itemName} 到槽位 {targetEquipIndex}");
     }
     
     #endregion

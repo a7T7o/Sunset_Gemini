@@ -217,9 +217,132 @@ Phase 3: 装备与工具链重构（Operation Arsenal 军火库行动）
 - 批量生成工具自动设置 `equipmentType`（策划不需要手动选）
 
 **遗留问题**:
-- [ ] Task 4 验收测试（装备/卸下/存档/读档）
+- [x] Task 4 验收测试（装备/卸下/存档/读档）→ 锐评006/007 发现问题
 - [ ] 可选：更新 `EquipmentSlotUI.Refresh()` 兼容新数据结构
 - [ ] 可选：创建 `Assets/111_Data/Items/Equipment/` 目录结构
+
+---
+
+### 会话 6 - 2026-01-30（紧急修复）
+
+**锐评来源**: 锐评006 + 锐评007
+
+**问题诊断**:
+- 控制台报错：`The same field name is serialized multiple times: Base(MonoBehaviour) equipmentType`
+- 原因：`EquipmentData.cs` 使用 `new` 关键字覆盖了基类 `ItemData` 的 `equipmentType` 字段
+- 后果：Unity 序列化系统崩溃，装备类型读取为 None，导致拖拽消失、索引错误
+
+**执行修复**:
+1. **手术一**：删除 `EquipmentData.cs` 中的 `public new EquipmentType equipmentType` 字段
+   - 基类 `ItemData` 已有此字段，子类不应重复定义
+   - 删除后，生成器会自动赋值给基类字段
+2. **验证**：
+   - `EquipmentService.cs` 的 `Save()` 方法已正确调用 `PrepareForSerialization()` ✅
+   - `SaveDataHelper.FromSaveData()` 通过 `SetProperty()` 恢复属性，无需调用 `OnAfterDeserialize()` ✅
+
+**编译结果**: 0 错误 4 警告（无关警告）✅
+
+**修改文件**:
+- `Assets/YYY_Scripts/Data/Items/EquipmentData.cs` - 删除重复字段定义
+
+**教训记录**:
+- ⚠️ Unity 序列化禁忌：子类不能用 `new` 关键字覆盖基类的序列化字段
+- ⚠️ 如果基类已有字段，子类直接使用即可
+
+**遗留问题**:
+- [ ] 重新生成装备 SO（旧的 SO 数据可能已损坏）
+- [ ] 验证拖拽装备功能
+- [ ] 验证存档/读档功能
+
+---
+
+### 会话 7 - 2026-01-30（锐评008 深度修复）
+
+**锐评来源**: 锐评008
+
+**问题现象**:
+- 任何物品拖入装备栏都会直接消失
+
+**锐评诊断**:
+1. 交互逻辑缺少"失败回滚"机制（原子性崩溃）
+2. 旧 SO 资产数据已损坏（equipmentType = None）
+
+**我的深度分析**:
+
+经过仔细审查代码，我发现了**真正的问题根源**：
+
+在 `InventorySlotInteraction.cs` 的 `OnDrop` 方法中：
+```csharp
+public void OnDrop(PointerEventData eventData)
+{
+    int targetIndex = SlotIndex;
+    var targetContainer = CurrentContainer;  // ⚠️ 装备槽位时返回 null！
+    
+    if (SlotDragContext.IsDragging)
+    {
+        HandleSlotDragContextDrop(targetIndex, targetContainer);  // targetContainer = null
+        return;
+    }
+}
+```
+
+当 `isEquip = true` 时，`CurrentContainer` 属性返回 `null`（因为装备槽位没有 `IItemContainer`）。
+
+在 `HandleSlotDragContextDrop` 方法中：
+- 只处理了 `ChestInventory` 和 `InventoryService` 的组合
+- **完全没有处理 `targetContainer == null`（装备槽位）的情况**
+- 物品被吞噬，没有回滚到源槽位
+
+**执行修复**:
+
+1. **修改 `HandleSlotDragContextDrop` 方法**：
+   - 添加装备槽位检测：`if (targetContainer == null && isEquip)`
+   - 调用新方法 `HandleDropToEquipmentSlot` 处理装备逻辑
+
+2. **新增 `HandleDropToEquipmentSlot` 方法**：
+   - 验证物品是否可以装备到该槽位（调用 `EquipmentService.CanEquipAt`）
+   - 如果验证失败：调用 `SlotDragContext.Cancel()` 回滚到源槽位
+   - 如果验证通过：执行装备操作，处理原装备的交换逻辑
+
+3. **添加 null 保护**：
+   - 当 `targetContainer == null` 且不是装备槽位时，取消操作并回滚
+
+**编译结果**: ✅ 0 错误 4 警告（无关警告）
+
+**修改文件**:
+- `Assets/YYY_Scripts/UI/Inventory/InventorySlotInteraction.cs` - 添加装备槽位拖拽处理
+
+**核心修复代码**:
+```csharp
+// 🔥 P0 修复：处理装备槽位（targetContainer == null && isEquip == true）
+if (targetContainer == null && isEquip)
+{
+    HandleDropToEquipmentSlot(sourceContainer, sourceIndex, targetIndex, draggedItem);
+    HideDragIcon();
+    SlotDragContext.End();
+    ResetChestHeldState();
+    return;
+}
+
+// 🔥 P0 修复：targetContainer 为 null 但不是装备槽位，取消操作
+if (targetContainer == null)
+{
+    SlotDragContext.Cancel();
+    HideDragIcon();
+    ResetChestHeldState();
+    return;
+}
+```
+
+**教训记录**:
+- ⚠️ 锐评008 指出的问题是正确的：交互逻辑确实存在"吞噬漏洞"
+- ⚠️ 我之前的分析过于草率，只看了 `InventoryInteractionManager`，没有检查 `InventorySlotInteraction`
+- ⚠️ `SlotDragContext` 拖拽路径和 `InventoryInteractionManager` 拖拽路径是两条独立的代码路径
+
+**遗留问题**:
+- [ ] 重新生成装备 SO（旧的 SO 数据可能已损坏）
+- [ ] 验证拖拽装备功能
+- [ ] 验证存档/读档功能
 
 ---
 
@@ -232,6 +355,7 @@ Phase 3: 装备与工具链重构（Operation Arsenal 军火库行动）
 | 使用 InventoryItem[] 替换 ItemStack[] | 与背包一致，支持未来扩展（耐久、附魔） | 2026-01-29 |
 | 装备 ID 范围 8000-8599 | 避免与现有 ID 冲突 | 2026-01-29 |
 | 槽位限制在 EquipItem 中检查 | 防止错误装备（戒指不能戴头上） | 2026-01-29 |
+| ⚠️ 禁止用 new 覆盖基类序列化字段 | Unity 序列化系统不支持，会导致数据丢失 | 2026-01-30 |
 
 ## 相关文件
 
@@ -243,3 +367,4 @@ Phase 3: 装备与工具链重构（Operation Arsenal 军火库行动）
 | `Assets/Editor/Tool_BatchItemSOGenerator.cs` | 批量生成工具 ✅ 已扩展 |
 | `Assets/YYY_Scripts/UI/Inventory/EquipmentSlotUI.cs` | 装备槽位 UI（可能需要更新） |
 | `Assets/YYY_Scripts/UI/Inventory/InventoryInteractionManager.cs` | 交互管理器 |
+| `Assets/YYY_Scripts/UI/Inventory/InventorySlotInteraction.cs` | 槽位交互组件 ✅ 已修复装备拖拽 |
